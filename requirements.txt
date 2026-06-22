@@ -1,0 +1,16 @@
+# ── Núcleo: orquestração dos protocolos ───────────────────────────────
+langgraph>=0.2.0
+langchain-core>=0.3.0
+
+# ── Backend dos modelos: HuggingFace Transformers ─────────────────────
+transformers>=4.44.0
+torch>=2.3.0
+accelerate>=0.33.0          # device_map="auto", carregamento eficiente em GPU
+sentencepiece>=0.2.0        # tokenizers de alguns modelos (Llama/Qwen)
+
+# Quantização opcional (para rodar o master em 4-bit, se quiser economizar VRAM)
+# bitsandbytes>=0.43.0
+
+# ── Dados e avaliação ─────────────────────────────────────────────────
+datasets>=2.20.0            # GSM8K
+numpy>=1.26.0
