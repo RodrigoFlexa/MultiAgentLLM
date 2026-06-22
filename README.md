@@ -7,9 +7,13 @@ Os três protocolos comparados:
 
 | Protocolo | Ideia | Modelos envolvidos |
 |-----------|-------|--------------------|
-| **Single Agent** (baseline) | O melhor modelo resolve sozinho, com raciocínio passo a passo. | só o **mestre** (LLM grande) |
+| **Single Minion** (piso) | O SLM resolve sozinho. Referência de qualidade mínima e custo mínimo. | só o **minion** (SLM) |
+| **Single Agent** (teto) | O melhor modelo resolve sozinho, com raciocínio passo a passo. | só o **mestre** (LLM grande) |
 | **Minions** (delegação) | O SLM resolve o que consegue; quando não tem confiança, delega ao LLM. | **minion** (SLM) + **mestre** sob demanda |
 | **Debate** | Vários SLMs com personas debatem e criticam-se; um juiz (LLM) decide. | N× **minion** + **mestre** como juiz |
+
+Os dois "agente sozinho" saem do mesmo grafo, mudando só qual modelo é usado —
+servem de piso e teto para ler os protocolos do meio.
 
 A tarefa de avaliação é o **GSM8K** (matemática escolar): a resposta final é
 sempre um número, então o acerto é verificado por script, sem juiz humano.

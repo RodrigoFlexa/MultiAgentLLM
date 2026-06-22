@@ -105,7 +105,10 @@ class ExperimentConfig:
     seed: int = 42
     results_dir: str = "results"
     # Quais protocolos rodar (nomes registrados no registry).
-    protocols: tuple[str, ...] = ("single_agent", "minions", "debate")
+    # Ordem: piso (SLM sozinho) → teto (LLM sozinho) → meio (Minions, Debate).
+    protocols: tuple[str, ...] = (
+        "single_minion", "single_agent", "minions", "debate",
+    )
 
 
 EXPERIMENT = ExperimentConfig()

@@ -1,9 +1,14 @@
 """
 Protocolo 1 — Agente Sozinho (baseline).
 
-"O melhor agente sozinho": o LLM mestre (modelo grande) resolve o problema
-diretamente, com raciocínio passo a passo. É a referência de qualidade máxima
-e de custo máximo contra a qual os outros protocolos são comparados.
+Um único modelo resolve o problema diretamente, passo a passo. Dois baselines
+saem do MESMO grafo, mudando apenas qual modelo do hub é usado:
+
+  * `single_agent`  → o LLM mestre sozinho = teto de qualidade e custo máximo.
+  * `single_minion` → o SLM minion sozinho = piso de qualidade e custo mínimo.
+
+Ter os dois extremos torna fácil ler os protocolos do meio (Minions, Debate):
+o quanto eles se aproximam do teto pagando perto do piso.
 
 Grafo:  START → solve → END
 """
@@ -27,6 +32,7 @@ class State(UsageState, total=False):
 @register
 class SingleAgent(Protocol):
     name = "single_agent"
+    solver = "master"   # atributo do LLMHub a ser usado ("master" ou "minion")
 
     def build_graph(self):
         g = StateGraph(State)
@@ -37,8 +43,9 @@ class SingleAgent(Protocol):
 
     # ── nó ──────────────────────────────────────────────────────────
     def _solve(self, state: State) -> dict[str, Any]:
-        gen = self.hub.master.chat(solve_messages(state["question"]))
-        return {"answer": gen.text, **usage_delta(gen, is_master=True)}
+        llm = getattr(self.hub, self.solver)
+        gen = llm.chat(solve_messages(state["question"]))
+        return {"answer": gen.text, **usage_delta(gen, is_master=self.solver == "master")}
 
     # ── plumbing ──────────────────────────────────────────────────────
     def initial_state(self, sample: Sample) -> dict[str, Any]:
@@ -46,3 +53,10 @@ class SingleAgent(Protocol):
 
     def extract(self, final_state: dict[str, Any]) -> tuple[str, dict]:
         return final_state.get("answer", ""), {}
+
+
+@register
+class SingleMinion(SingleAgent):
+    """O SLM resolvendo sozinho — mesmo grafo, modelo pequeno."""
+    name = "single_minion"
+    solver = "minion"
