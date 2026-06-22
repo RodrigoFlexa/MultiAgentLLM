@@ -14,3 +14,5 @@ sentencepiece>=0.2.0        # tokenizers de alguns modelos (Llama/Qwen)
 # ── Dados e avaliação ─────────────────────────────────────────────────
 datasets>=2.20.0            # GSM8K
 numpy>=1.26.0
+tqdm>=4.66.0                # barra de progresso da simulação
+python-dotenv>=1.0.0        # carrega configurações de .env (ex.: qual GPU usar)

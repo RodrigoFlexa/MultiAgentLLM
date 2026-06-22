@@ -35,7 +35,7 @@ def load_gsm8k(n_samples: int, seed: int, split: str = "test") -> list[Sample]:
     try:
         from datasets import load_dataset
 
-        ds = load_dataset("gsm8k", "main", split=split)
+        ds = load_dataset("openai/gsm8k", "main", split=split)
         idxs = list(range(len(ds)))
         random.Random(seed).shuffle(idxs)
         idxs = idxs[:n_samples]

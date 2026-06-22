@@ -93,7 +93,7 @@ class Debate(Protocol):
                 if round_idx == 0
                 else self._critique_msgs(question, i, prev)
             )
-            gens.append(self.hub.debater().chat(msgs, gen_cfg=cfg.CREATIVE))
+            gens.append(self.hub.minion_agent().chat(msgs, gen_cfg=cfg.CREATIVE))
 
         return {
             "answers": [g.text for g in gens],

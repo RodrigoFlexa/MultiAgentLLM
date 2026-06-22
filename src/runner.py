@@ -16,6 +16,8 @@ import os
 import time
 from dataclasses import asdict
 
+from tqdm import tqdm
+
 import config as cfg
 from src.dataset import load_samples
 from src.llm import LLMHub
@@ -27,11 +29,12 @@ def run_protocol(name: str, hub: LLMHub, samples) -> list[QueryResult]:
     proto = get_protocol(name, hub)
     results: list[QueryResult] = []
     t0 = time.perf_counter()
-    for i, sample in enumerate(samples, 1):
+    bar = tqdm(samples, desc=f"[{name}]", unit="q")
+    for sample in bar:
         results.append(proto.run(sample))
-        if i % 20 == 0 or i == len(samples):
-            acc = sum(r.correct for r in results) / len(results)
-            print(f"  [{name}] {i}/{len(samples)}  acurácia parcial={acc:.1%}")
+        acc = sum(r.correct for r in results) / len(results)
+        bar.set_postfix(acc=f"{acc:.1%}")
+    bar.close()
     print(f"  [{name}] concluído em {time.perf_counter() - t0:.1f}s")
     return results
 
@@ -69,8 +72,9 @@ def _print_table(aggs: list[Aggregate]) -> None:
 def run_experiment(exp: cfg.ExperimentConfig = cfg.EXPERIMENT) -> list[Aggregate]:
     os.makedirs(exp.results_dir, exist_ok=True)
 
-    print(f"Backend: {cfg.BACKEND} | Minion: {cfg.MINION_MODEL.label} | "
-          f"Mestre: {cfg.MASTER_MODEL.label}")
+    gpu = os.environ.get("CUDA_VISIBLE_DEVICES") or "(todas visíveis)"
+    print(f"GPU(s): {gpu} | Backend: {cfg.BACKEND} | "
+          f"Minion: {cfg.MINION_MODEL.label} | Mestre: {cfg.MASTER_MODEL.label}")
     print(f"Carregando {exp.n_samples} amostras de {exp.dataset} (seed={exp.seed})...")
     samples = load_samples(exp.n_samples, exp.seed, exp.dataset, exp.split)
     print(f"{len(samples)} perguntas carregadas.\n")

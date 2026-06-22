@@ -1,0 +1,72 @@
+[
+  {
+    "protocol": "single_agent",
+    "question": "Betty is saving for a $100 wallet. She has half of the money she needs. Her parents give her $15 and her grandparents twice as much as her parents. How much more money does Betty need to buy the wallet?",
+    "gold": "5",
+    "prediction": "Resolvendo passo a passo (mock).\n#### 3",
+    "correct": false,
+    "latency_s": 0.001,
+    "total_tokens": 68,
+    "master_tokens": 7,
+    "minion_tokens": 0,
+    "used_master": true,
+    "n_model_calls": 1,
+    "extra": {}
+  },
+  {
+    "protocol": "single_agent",
+    "question": "A robe takes 2 bolts of blue fiber and half that much white fiber. How many bolts in total does it take?",
+    "gold": "3",
+    "prediction": "Resolvendo passo a passo (mock).\n#### 74",
+    "correct": false,
+    "latency_s": 0.001,
+    "total_tokens": 50,
+    "master_tokens": 7,
+    "minion_tokens": 0,
+    "used_master": true,
+    "n_model_calls": 1,
+    "extra": {}
+  },
+  {
+    "protocol": "single_agent",
+    "question": "Weng earns $12 an hour for babysitting. Yesterday, she just did 50 minutes of babysitting. How much did she earn?",
+    "gold": "10",
+    "prediction": "Resolvendo passo a passo (mock).\n#### 55",
+    "correct": false,
+    "latency_s": 0.001,
+    "total_tokens": 48,
+    "master_tokens": 7,
+    "minion_tokens": 0,
+    "used_master": true,
+    "n_model_calls": 1,
+    "extra": {}
+  },
+  {
+    "protocol": "single_agent",
+    "question": "James writes a 3-page letter to 2 different friends twice a week. How many pages does he write a year?",
+    "gold": "624",
+    "prediction": "Resolvendo passo a passo (mock).\n#### 36",
+    "correct": false,
+    "latency_s": 0.001,
+    "total_tokens": 48,
+    "master_tokens": 7,
+    "minion_tokens": 0,
+    "used_master": true,
+    "n_model_calls": 1,
+    "extra": {}
+  },
+  {
+    "protocol": "single_agent",
+    "question": "Natalia sold clips to 48 friends in April, and then she sold half as many clips in May. How many clips did she sell altogether in April and May?",
+    "gold": "72",
+    "prediction": "Resolvendo passo a passo (mock).\n#### 67",
+    "correct": false,
+    "latency_s": 0.001,
+    "total_tokens": 57,
+    "master_tokens": 7,
+    "minion_tokens": 0,
+    "used_master": true,
+    "n_model_calls": 1,
+    "extra": {}
+  }
+]

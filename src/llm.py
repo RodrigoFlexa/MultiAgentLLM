@@ -206,7 +206,8 @@ class LLMHub:
         self.minion = LLM(cfg.MINION_MODEL, self.backend)
         self.master = LLM(cfg.MASTER_MODEL, self.backend)
 
-    def debater(self) -> LLM:
-        """Cada debatedor é uma instância do minion (mesmo modelo, personas
-        diferentes definidas via prompt)."""
+    def minion_agent(self) -> LLM:
+        """Nova instância do minion, para protocolos que rodam várias cópias
+        em paralelo (debate, mixture-of-agents) com prompts diferentes sobre
+        o mesmo modelo e backend compartilhado."""
         return LLM(cfg.MINION_MODEL, self.backend)

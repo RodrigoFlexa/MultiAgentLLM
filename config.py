@@ -10,6 +10,14 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
+from dotenv import load_dotenv
+
+# Carrega o .env (se existir) antes de qualquer leitura de variável de
+# ambiente abaixo. Precisa rodar antes do primeiro `import torch` (que só
+# acontece sob demanda em `src/llm.py`), pois é isso que decide qual(is)
+# GPU(s) ficam visíveis para o processo.
+load_dotenv()
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Modelos
@@ -37,6 +45,16 @@ MASTER_MODEL = ModelConfig(
     label="Qwen2.5-14B",
     max_new_tokens=768,
 )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# GPU
+# ──────────────────────────────────────────────────────────────────────
+# Qual(is) GPU(s) o processo pode ver, configurado no .env (veja .env.example)
+# via CUDA_VISIBLE_DEVICES (ex.: "0", "1", "0,1"). Se não estiver definida,
+# todas as GPUs visíveis na máquina ficam disponíveis (comportamento padrão
+# do CUDA/accelerate).
+GPU_DEVICE: str = os.environ.get("CUDA_VISIBLE_DEVICES", "")
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -94,6 +112,15 @@ class DebateConfig:
     )
 
 
+@dataclass(frozen=True)
+class MoAConfig:
+    """Mixture-of-Agents (Wang et al. 2024, arXiv:2406.04692): N minions
+    ("proposers") respondem de forma independente e o mestre ("agregador")
+    sintetiza a resposta final a partir das propostas — sem rodadas de
+    crítica adversarial entre eles, como no debate."""
+    n_proposers: int = 3        # minions independentes na camada de propostas
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Experimento
 # ──────────────────────────────────────────────────────────────────────
@@ -105,12 +132,15 @@ class ExperimentConfig:
     seed: int = 42
     results_dir: str = "results"
     # Quais protocolos rodar (nomes registrados no registry).
-    # Ordem: piso (SLM sozinho) → teto (LLM sozinho) → meio (Minions, Debate).
+    # Ordem: piso (SLM sozinho) → teto (LLM sozinho) → meio (Minions, MoA).
+    # "debate" segue registrado e pode ser rodado via --protocols debate,
+    # mas saiu do conjunto padrão em favor do Mixture-of-Agents.
     protocols: tuple[str, ...] = (
-        "single_minion", "single_agent", "minions", "debate",
+        "single_minion", "single_agent", "minions", "mixture_of_agents",
     )
 
 
 EXPERIMENT = ExperimentConfig()
 MINIONS = MinionsConfig()
 DEBATE = DebateConfig()
+MOA = MoAConfig()
