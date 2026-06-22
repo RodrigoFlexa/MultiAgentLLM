@@ -1,16 +1,17 @@
-# MultiAgentLLM — Comparando protocolos de agentes (Single vs. Minions vs. Debate)
+# MultiAgentLLM — Comparando protocolos de agentes (Single vs. Minions vs. MoA vs. Debate)
 
-Bancada de testes para comparar três formas de organizar LLMs/SLMs no mesmo
+Bancada de testes para comparar diferentes formas de organizar LLMs/SLMs no mesmo
 problema e medir, de forma automática, **qualidade × custo × latência**.
 
-Os três protocolos comparados:
+Os protocolos comparados:
 
 | Protocolo | Ideia | Modelos envolvidos |
 |-----------|-------|--------------------|
 | **Single Minion** (piso) | O SLM resolve sozinho. Referência de qualidade mínima e custo mínimo. | só o **minion** (SLM) |
 | **Single Agent** (teto) | O melhor modelo resolve sozinho, com raciocínio passo a passo. | só o **mestre** (LLM grande) |
 | **Minions** (delegação) | O SLM resolve o que consegue; quando não tem confiança, delega ao LLM. | **minion** (SLM) + **mestre** sob demanda |
-| **Debate** | Vários SLMs com personas debatem e criticam-se; um juiz (LLM) decide. | N× **minion** + **mestre** como juiz |
+| **Mixture-of-Agents** | N minions propõem de forma independente; o mestre agrega e sintetiza a final. | N× **minion** + **mestre** agregador |
+| **Debate** (clássico) | N cópias do *mesmo* SLM respondem e revisam vendo as respostas das outras; a final sai por **voto majoritário**, sem juiz. | N× **minion** |
 
 Os dois "agente sozinho" saem do mesmo grafo, mudando só qual modelo é usado —
 servem de piso e teto para ler os protocolos do meio.
@@ -34,10 +35,11 @@ src/
   dataset.py         # carrega GSM8K (com fallback offline) e extrai a resposta-ouro
   metrics.py         # extrai o número final, verifica acerto, agrega métricas
   protocols/
-    base.py          # Protocol (classe-base) + registry + estado de contabilização
-    single_agent.py  # baseline
-    minions.py       # delegação com nó condicional
-    debate.py        # debate em loop + juiz
+    base.py             # Protocol (classe-base) + registry + estado de contabilização
+    single_agent.py     # baselines (piso/teto): SLM ou LLM sozinho
+    minions.py          # delegação com nó condicional
+    mixture_of_agents.py# N propostas independentes + agregação pelo mestre
+    debate.py           # debate clássico: N cópias do SLM + voto majoritário
 runner.py            # roda os protocolos, agrega e salva os resultados
 scripts/
   run_experiment.py  # ponto de entrada (CLI)
@@ -46,7 +48,8 @@ results/             # saídas: raw_<protocolo>.json, summary.json/.csv
 
 ### Como cada grafo funciona
 
-**Single Agent** — `START → solve → END`. Uma chamada ao mestre.
+**Single Agent / Single Minion** — `START → solve → END`. Uma chamada ao mestre
+(ou ao minion, no caso do piso).
 
 **Minions** — o minion responde; um nó condicional lê a saída:
 
@@ -58,17 +61,25 @@ START → minion ──(delegou?)──┬── sim → master → END
 A decisão de delegar usa **auto-avaliação**: o minion é instruído a responder
 apenas `<DELEGAR>` quando estiver inseguro (token configurável em `config.py`).
 
-**Debate** — loop controlado por contador de rodadas, depois o juiz:
+**Mixture-of-Agents** — `START → propose → aggregate → END`. N minions resolvem
+em paralelo (diversidade por temperatura); o mestre lê todas as propostas e
+sintetiza a resposta final, sem rodadas adversariais entre os proposers.
+
+**Debate** (clássico "society of minds", Du et al. 2023, arXiv:2305.14325) —
+loop de rodadas seguido da apuração do voto:
 
 ```
 START → debate ──(round < N)──┐
           ▲                    │
           └────────────────────┘
-        debate ──(round == N)──→ judge → END
+        debate ──(round == N)──→ tally → END
 ```
 
-Na rodada 0 os debatedores resolvem de forma independente; nas seguintes, cada
-um vê as respostas dos outros e revisa a sua. O juiz (mestre) lê tudo e decide.
+São N cópias do **mesmo** modelo (sem personas, sem juiz). Na rodada 0 cada
+agente responde de forma independente; nas seguintes, cada um revisa a própria
+resposta vendo as respostas dos outros. No fim, o nó `tally` decide a resposta
+final por **voto majoritário** sobre o número de cada agente (desempate
+determinístico pelo agente de menor índice).
 
 ---
 
@@ -96,19 +107,19 @@ VRAM apertar, ative `MASTER_4BIT=1` para carregar o mestre em 4-bit.
 ```bash
 pip install -r requirements.txt
 
-# Experimento real na GPU (200 perguntas, os 3 protocolos):
-python scripts/run_experiment.py --n 200
+# Experimento real na GPU (200 perguntas, conjunto padrão de protocolos):
+python scripts/run_experiment.py --gpu 0 --n 200
 
-# Subconjunto de protocolos:
-python scripts/run_experiment.py --n 200 --protocols single_agent minions
+# Subconjunto de protocolos (inclui o debate clássico, fora do padrão):
+python scripts/run_experiment.py --n 200 --protocols single_agent minions debate
 
 # Teste de fumaça SEM GPU e SEM baixar modelos (valida todo o encanamento):
 MULTIAGENT_BACKEND=mock python scripts/run_experiment.py --n 10
 ```
 
 O **backend mock** é determinístico e não usa modelo nenhum — serve para
-verificar, numa máquina sem GPU, que os grafos, a delegação e a contabilização
-funcionam de ponta a ponta. Ele não mede qualidade real.
+verificar, numa máquina sem GPU, que os grafos, a delegação, o voto e a
+contabilização funcionam de ponta a ponta. Ele não mede qualidade real.
 
 ---
 
@@ -146,22 +157,29 @@ abaixo de 100%, derrubando latência média e custo enquanto a acurácia fica
 próxima da do mestre sozinho. Desvantagens: depende da **calibração da
 delegação** — se o minion for confiante demais, erra sem delegar (perde
 acurácia); se for cauteloso demais, delega tudo e vira o baseline com overhead
-extra. A auto-avaliação por token é simples, mas imperfeita.
+extra.
 
-**Debate** — a aposta de qualidade via redundância. Vantagem: múltiplas
-perspectivas podem corrigir erros que um único SLM cometeria, às vezes
-superando o mestre sozinho em problemas que se beneficiam de verificação
-cruzada. Desvantagem clara: **latência e custo explodem** — são N debatedores ×
-R rodadas + 1 chamada de juiz por pergunta (no default, 5 chamadas). É o
-protocolo mais caro e mais lento; só compensa se o ganho de acurácia justificar.
+**Mixture-of-Agents** — qualidade via síntese. Vantagem: o mestre agrega várias
+propostas baratas do SLM e pode corrigir erros pontuais, sem o custo de rodadas
+adversariais. Desvantagem: ainda paga uma chamada do modelo grande por pergunta
+(o agregador), então custa mais que o Minions quando este não delega.
 
-O experimento existe justamente para colocar números nesse trade-off:
-quanto de acurácia o **Minions** preserva gastando uma fração do mestre, e se o
-**Debate** paga o próprio custo em acurácia.
+**Debate (voto majoritário, sem juiz)** — qualidade via redundância **barata**:
+não usa o modelo grande, só N cópias do SLM. Vantagem: várias tentativas
+independentes que se revisam podem corrigir erros que uma só cometeria, a custo
+de tokens baratos. Custo: N agentes × R rodadas de chamadas ao SLM por pergunta
+(no default, 3 × 2 = 6 chamadas) — mais lento que os baselines. Risco: cópias
+idênticas podem convergir para o **mesmo erro** (diversidade real limitada), e o
+voto majoritário não cria conhecimento novo se a maioria já erra.
+
+O experimento existe justamente para colocar números nesse trade-off: quanto de
+acurácia o **Minions** preserva gastando uma fração do mestre, se o **MoA**
+compensa a chamada extra do agregador, e se o **Debate** entre SLMs baratos
+chega perto do mestre sozinho.
 
 ---
 
-## Estendendo (adicionar um 4º protocolo)
+## Estendendo (adicionar um novo protocolo)
 
 1. Crie `src/protocols/meu_protocolo.py` com uma classe que herde de `Protocol`,
    implemente `build_graph`, `initial_state` e `extract`, e decore com

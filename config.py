@@ -38,7 +38,7 @@ MINION_MODEL = ModelConfig(
 )
 
 # O "mestre": LLM mais capaz (<= 20B params, conforme pedido). Resolve o que
-# o minion não dá conta e atua como juiz no protocolo de debate.
+# o minion não dá conta (Minions) e atua como agregador no Mixture-of-Agents.
 # Qwen2.5-14B é forte em raciocínio matemático (GSM8K) e cabe folgado numa A100.
 MASTER_MODEL = ModelConfig(
     name="Qwen/Qwen2.5-14B-Instruct",
@@ -101,15 +101,12 @@ class MinionsConfig:
 
 @dataclass(frozen=True)
 class DebateConfig:
-    n_debaters: int = 2        # quantos SLMs debatem
-    n_rounds: int = 2          # rodadas de crítica antes do juiz
-    # Personas dão pontos de vista diferentes aos debatedores.
-    personas: tuple[str, ...] = (
-        "Você é um matemático rigoroso: resolve passo a passo, "
-        "conferindo cada conta aritmética.",
-        "Você é um pensador cético: procura ativamente erros de "
-        "raciocínio e armadilhas no enunciado.",
-    )
+    """Debate clássico "society of minds" (Du et al. 2023, arXiv:2305.14325):
+    N cópias do MESMO modelo respondem e depois revisam suas respostas vendo as
+    dos outros, por algumas rodadas. A resposta final sai por VOTO MAJORITÁRIO,
+    sem juiz. A diversidade entre cópias idênticas vem da amostragem (CREATIVE)."""
+    n_agents: int = 3          # cópias homogêneas do minion que debatem
+    n_rounds: int = 2          # rodadas no total (1 inicial + revisões)
 
 
 @dataclass(frozen=True)

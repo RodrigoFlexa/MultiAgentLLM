@@ -211,3 +211,4 @@ class LLMHub:
         em paralelo (debate, mixture-of-agents) com prompts diferentes sobre
         o mesmo modelo e backend compartilhado."""
         return LLM(cfg.MINION_MODEL, self.backend)
+kend)

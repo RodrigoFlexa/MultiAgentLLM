@@ -1,39 +1,47 @@
 """
-Protocolo 3 — Debate Multiagente.
+Protocolo — Debate Multiagente clássico ("society of minds").
 
-Vários SLMs (com personas diferentes) resolvem o problema, depois criticam as
-respostas uns dos outros por algumas rodadas e, por fim, um agente "juiz" (o
-LLM mestre) lê todo o debate e decide a resposta final.
+Implementação fiel ao primeiro artigo de debate entre LLMs:
+Du, Li, Torralba, Tenenbaum, Mordatch — "Improving Factuality and Reasoning in
+Language Models through Multiagent Debate" (2023, arXiv:2305.14325).
 
-Grafo (loop controlado por contador de rodadas):
+Características do método original (e que diferenciam de uma versão com juiz):
+  * AGENTES HOMOGÊNEOS: N cópias do MESMO modelo (aqui, o minion). Sem personas.
+  * Rodada 0: cada agente responde de forma INDEPENDENTE.
+  * Rodadas seguintes: cada agente recebe as respostas dos OUTROS agentes da
+    rodada anterior e revisa a sua, usando-as como informação adicional.
+  * SEM JUIZ: a resposta final sai por VOTO MAJORITÁRIO entre os agentes.
+
+Grafo (loop de rodadas + apuração do voto):
     START → debate ──(round < N)──┐
               ▲                    │
               └────────────────────┘
-            debate ──(round == N)──→ judge → END
+            debate ──(round == N)──→ tally → END
 
-Objetivo: avaliar se modelos pequenos debatendo superam o agente sozinho — e
-medir o quanto o debate aumenta a latência (várias chamadas por pergunta).
+A diversidade entre cópias idênticas vem da amostragem (temperatura > 0).
+Nenhuma chamada usa o modelo grande, então toda a contabilização é de minion.
 """
 from __future__ import annotations
 
+from collections import Counter
 from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
 import config as cfg
 from src.dataset import Sample
+from src.metrics import extract_final_number
 from src.protocols.base import (
-    Protocol, UsageState, combine_usage, empty_usage, register, usage_delta,
+    Protocol, UsageState, combine_usage, empty_usage, register, solve_messages,
 )
-
-_SOLVE_TAIL = " Pense passo a passo e termine com uma linha '#### <número final>'."
 
 
 class State(UsageState, total=False):
     question: str
-    answers: list[str]   # resposta atual de cada debatedor
+    answers: list[str]          # resposta atual de cada agente
     round: int
-    answer: str          # veredito final do juiz
+    answer: str                 # consenso final (texto do agente representante)
+    vote_distribution: dict     # {valor_numérico(str): nº de votos}
 
 
 @register
@@ -41,44 +49,33 @@ class Debate(Protocol):
     name = "debate"
 
     def build_graph(self):
-        self.n_debaters = cfg.DEBATE.n_debaters
+        self.n_agents = cfg.DEBATE.n_agents
         self.n_rounds = cfg.DEBATE.n_rounds
-        self.personas = cfg.DEBATE.personas
 
         g = StateGraph(State)
         g.add_node("debate", self._debate_round)
-        g.add_node("judge", self._judge)
+        g.add_node("tally", self._tally)
         g.add_edge(START, "debate")
         g.add_conditional_edges(
-            "debate", self._keep_debating, {"continue": "debate", "judge": "judge"}
+            "debate", self._keep_debating, {"continue": "debate", "tally": "tally"}
         )
-        g.add_edge("judge", END)
+        g.add_edge("tally", END)
         return g.compile()
 
-    # ── helpers de prompt ──────────────────────────────────────────────
-    def _persona(self, i: int) -> str:
-        return self.personas[i % len(self.personas)]
-
-    def _solve_msgs(self, question: str, i: int) -> list[dict]:
-        return [
-            {"role": "system", "content": self._persona(i) + _SOLVE_TAIL},
-            {"role": "user", "content": question},
-        ]
-
-    def _critique_msgs(self, question: str, i: int, others: list[str]) -> list[dict]:
+    # ── prompts ────────────────────────────────────────────────────────
+    def _revise_msgs(self, question: str, i: int, others: list[str]) -> list[dict]:
         bloco = "\n\n".join(
             f"[Agente {j+1}]\n{ans}" for j, ans in enumerate(others) if j != i
         )
         user = (
             f"Problema:\n{question}\n\n"
-            f"Respostas dos outros agentes na rodada anterior:\n{bloco}\n\n"
-            "Aponte falhas no raciocínio deles (e no seu, se houver) e então dê "
-            "sua resposta revisada e final, terminando com '#### <número final>'."
+            f"Estas são as soluções de outros agentes para o mesmo problema:\n"
+            f"{bloco}\n\n"
+            "Use as soluções dos outros agentes como informação adicional, "
+            "revise seu raciocínio e dê sua resposta atualizada, terminando "
+            "com uma linha '#### <número final>'."
         )
-        return [
-            {"role": "system", "content": self._persona(i) + _SOLVE_TAIL},
-            {"role": "user", "content": user},
-        ]
+        return solve_messages(user)
 
     # ── nós ────────────────────────────────────────────────────────────
     def _debate_round(self, state: State) -> dict[str, Any]:
@@ -87,11 +84,11 @@ class Debate(Protocol):
         prev = state.get("answers", [])
 
         gens = []
-        for i in range(self.n_debaters):
+        for i in range(self.n_agents):
             msgs = (
-                self._solve_msgs(question, i)
+                solve_messages(question)                 # rodada 0: independente
                 if round_idx == 0
-                else self._critique_msgs(question, i, prev)
+                else self._revise_msgs(question, i, prev)  # rodadas: revisão
             )
             gens.append(self.hub.minion_agent().chat(msgs, gen_cfg=cfg.CREATIVE))
 
@@ -101,26 +98,32 @@ class Debate(Protocol):
             **combine_usage(gens, is_master=False),
         }
 
-    def _judge(self, state: State) -> dict[str, Any]:
-        question = state["question"]
-        bloco = "\n\n".join(
-            f"[Agente {i+1}]\n{ans}" for i, ans in enumerate(state.get("answers", []))
-        )
-        msgs = [
-            {"role": "system", "content":
-                "Você é um juiz imparcial e rigoroso. Dadas as soluções de "
-                "vários agentes, determine a resposta final correta."},
-            {"role": "user", "content":
-                f"Problema:\n{question}\n\nSoluções dos agentes:\n{bloco}\n\n"
-                "Analise as soluções, identifique o consenso ou a que está "
-                "correta, e termine com '#### <número final>'."},
-        ]
-        gen = self.hub.master.chat(msgs)
-        return {"answer": gen.text, **usage_delta(gen, is_master=True)}
+    def _tally(self, state: State) -> dict[str, Any]:
+        """Voto majoritário sobre o número final de cada agente. Sem modelo:
+        nó puramente determinístico (não altera a contabilização)."""
+        answers = state.get("answers", [])
+        nums = [extract_final_number(a) for a in answers]
+        valid = [(i, n) for i, n in enumerate(nums) if n is not None]
+
+        if not valid:
+            return {"answer": answers[0] if answers else "", "vote_distribution": {}}
+
+        counts = Counter(n for _, n in valid)
+        max_votes = max(counts.values())
+        empatados = [n for n, c in counts.items() if c == max_votes]
+        # Desempate determinístico: número que aparece no agente de menor índice.
+        first_idx = {n: next(i for i, m in valid if m == n) for n in empatados}
+        winner = min(empatados, key=lambda n: first_idx[n])
+        rep_idx = first_idx[winner]
+
+        return {
+            "answer": answers[rep_idx],
+            "vote_distribution": {str(n): c for n, c in counts.items()},
+        }
 
     # ── roteamento condicional ─────────────────────────────────────────
     def _keep_debating(self, state: State) -> str:
-        return "continue" if state.get("round", 0) < self.n_rounds else "judge"
+        return "continue" if state.get("round", 0) < self.n_rounds else "tally"
 
     # ── plumbing ──────────────────────────────────────────────────────
     def initial_state(self, sample: Sample) -> dict[str, Any]:
@@ -130,5 +133,6 @@ class Debate(Protocol):
     def extract(self, final_state: dict[str, Any]) -> tuple[str, dict]:
         return final_state.get("answer", ""), {
             "rounds": final_state.get("round", 0),
-            "debater_answers": final_state.get("answers", []),
+            "agent_answers": final_state.get("answers", []),
+            "vote_distribution": final_state.get("vote_distribution", {}),
         }
