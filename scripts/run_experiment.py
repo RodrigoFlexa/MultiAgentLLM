@@ -1,29 +1,29 @@
 #!/usr/bin/env python
 """
-Ponto de entrada do experimento.
+Ponto de entrada de UMA rodada (uma combinação de modelos/frota).
 
-Uso:
-    # rodar TODOS os protocolos de uma vez (inclui o debate clássico):
-    python scripts/run_experiment.py --all --gpu 0 --n 200
+Exemplos:
+    # todos os protocolos com Phi-4-mini (frota de 3) e mestre Qwen2.5-32B:
+    python scripts/run_experiment.py --all --gpu 0 --n 200 \
+        --minion phi4-mini --master qwen2.5-32b --n-minions 3
 
-    # teste de fumaça (sem GPU, sem baixar modelos):
+    # baseline do modelo grande sozinho:
+    python scripts/run_experiment.py --protocols single_agent --master qwen2.5-32b
+
+    # teste de fumaça sem GPU:
     MULTIAGENT_BACKEND=mock python scripts/run_experiment.py --all --n 10
 
-    # subconjunto específico:
-    python scripts/run_experiment.py --gpu 0 --n 200 --protocols debate minions
+Para varrer a GRADE inteira de experimentos de uma vez, use scripts/run_sweep.py.
 
-Flags úteis:
-    --all            roda todos os protocolos registrados, em ordem coerente
-                      (piso → teto → meio → debate). Ignora o conjunto padrão.
-    --gpu G          qual(is) GPU(s) usar (índice físico do `nvidia-smi`,
-                      ex.: "0" ou "0,1"). Default: o que estiver em
-                      CUDA_VISIBLE_DEVICES (.env) ou todas as GPUs visíveis.
-    --n N            quantidade de perguntas do GSM8K (split de teste tem
-                      1319 perguntas; pedir mais que isso usa todas elas)
+Flags:
+    --all            roda todos os protocolos registrados (piso→teto→meio→foa)
+    --minion KEY     SLM da frota / single_minion (chave do MODEL_CATALOG)
+    --master KEY     mestre/orquestrador (chave do MODEL_CATALOG)
+    --n-minions N    tamanho da frota (2..4) para debate/MoA/FoA
+    --gpu G          GPU(s), ex.: "0" ou "0,1"
+    --n N            nº de perguntas do GSM8K
     --seed S         seed da amostragem
-    --protocols ...  subconjunto de protocolos (default: o conjunto padrão)
-    --version V      identificador da rodada (ex.: "1"); vira sufixo
-                      _v<version> nos arquivos salvos em results/
+    --protocols ...  subconjunto de protocolos
 """
 from __future__ import annotations
 
@@ -32,7 +32,6 @@ import os
 import sys
 from dataclasses import replace
 
-# Permite rodar a partir da raiz do projeto sem instalar como pacote.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import config as cfg
@@ -40,36 +39,34 @@ from src.protocols import available
 
 
 def all_protocols() -> tuple[str, ...]:
-    """Todos os protocolos registrados, numa ordem didática (piso → teto →
-    meio → debate). Protocolos novos não previstos entram no fim."""
     preferida = ["single_minion", "single_agent", "minions",
-                 "mixture_of_agents", "debate"]
-    registrados = available()
-    ordenados = [p for p in preferida if p in registrados]
-    ordenados += [p for p in registrados if p not in preferida]
-    return tuple(ordenados)
+                 "mixture_of_agents", "foa", "debate"]
+    regs = available()
+    return tuple([p for p in preferida if p in regs]
+                 + [p for p in regs if p not in preferida])
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Comparar protocolos multiagente no GSM8K")
-    parser.add_argument("--all", action="store_true", dest="run_all",
-                        help="roda TODOS os protocolos registrados (inclui o debate clássico)")
-    parser.add_argument("--gpu", type=str, default=None,
-                        help="GPU(s) a usar, ex.: '0' ou '0,1' (default: CUDA_VISIBLE_DEVICES do .env)")
-    parser.add_argument("--n", type=int, default=cfg.EXPERIMENT.n_samples,
-                        help="número de perguntas do GSM8K (split de teste tem 1319)")
-    parser.add_argument("--seed", type=int, default=cfg.EXPERIMENT.seed)
-    parser.add_argument("--protocols", nargs="+", default=None,
-                        help=f"subconjunto de {available()}")
-    parser.add_argument("--version", type=str, default=None,
-                        help="identificador da rodada (ex.: '1'); vira sufixo "
-                             "_v<version> nos arquivos salvos em results/")
-    args = parser.parse_args()
+    p = argparse.ArgumentParser(description="Rodada de protocolos multiagente no GSM8K")
+    p.add_argument("--all", action="store_true", dest="run_all",
+                   help="roda TODOS os protocolos registrados")
+    p.add_argument("--minion", default=cfg.EXPERIMENT.minion,
+                   help=f"SLM da frota — chaves: {sorted(cfg.MODEL_CATALOG)}")
+    p.add_argument("--master", default=cfg.EXPERIMENT.master,
+                   help=f"mestre/orquestrador — chaves: {sorted(cfg.MODEL_CATALOG)}")
+    p.add_argument("--n-minions", type=int, default=cfg.EXPERIMENT.n_minions,
+                   dest="n_minions", help="tamanho da frota (2..4)")
+    p.add_argument("--gpu", type=str, default=None)
+    p.add_argument("--n", type=int, default=cfg.EXPERIMENT.n_samples)
+    p.add_argument("--seed", type=int, default=cfg.EXPERIMENT.seed)
+    p.add_argument("--protocols", nargs="+", default=None)
+    args = p.parse_args()
 
     if args.gpu is not None:
-        # Precisa ser setado antes do primeiro `import torch`, que só acontece
-        # sob demanda (lazy) dentro de src/llm.py — a tempo, portanto.
         os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
+
+    # valida as chaves de modelo cedo (mensagem clara)
+    cfg.get_model(args.minion); cfg.get_model(args.master)
 
     if args.run_all:
         protocols = all_protocols()
@@ -78,11 +75,11 @@ def main() -> None:
     else:
         protocols = cfg.EXPERIMENT.protocols
 
-    # Import tardio: só depois de definir a GPU acima.
     from src.runner import run_experiment
 
     exp = replace(cfg.EXPERIMENT, n_samples=args.n, seed=args.seed,
-                  protocols=protocols, version=args.version)
+                  minion=args.minion, master=args.master,
+                  n_minions=args.n_minions, protocols=protocols)
     run_experiment(exp)
 
 

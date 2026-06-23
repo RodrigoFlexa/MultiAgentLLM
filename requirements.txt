@@ -16,3 +16,4 @@ datasets>=2.20.0            # GSM8K
 numpy>=1.26.0
 tqdm>=4.66.0                # barra de progresso da simulação
 python-dotenv>=1.0.0        # carrega configurações de .env (ex.: qual GPU usar)
+bitsandbytes>=0.43.0     # 4-bit p/ o mestre grande (Qwen2.5-32B)

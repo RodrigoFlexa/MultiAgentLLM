@@ -1,194 +1,203 @@
-# MultiAgentLLM — Comparando protocolos de agentes (Single vs. Minions vs. MoA vs. Debate)
+# MultiAgentLLM — protocolos multiagente (SLM × LLM) no GSM8K
 
-Bancada de testes para comparar diferentes formas de organizar LLMs/SLMs no mesmo
-problema e medir, de forma automática, **qualidade × custo × latência**.
+Bancada de testes que compara formas de organizar modelos de linguagem para
+resolver o mesmo problema, medindo o trade-off **acurácia × latência × custo
+computacional**. A tarefa é o **GSM8K** (matemática escolar): a resposta final é
+sempre um número, então o acerto é verificado automaticamente por script.
 
-Os protocolos comparados:
-
-| Protocolo | Ideia | Modelos envolvidos |
-|-----------|-------|--------------------|
-| **Single Minion** (piso) | O SLM resolve sozinho. Referência de qualidade mínima e custo mínimo. | só o **minion** (SLM) |
-| **Single Agent** (teto) | O melhor modelo resolve sozinho, com raciocínio passo a passo. | só o **mestre** (LLM grande) |
-| **Minions** (delegação) | O SLM resolve o que consegue; quando não tem confiança, delega ao LLM. | **minion** (SLM) + **mestre** sob demanda |
-| **Mixture-of-Agents** | N minions propõem de forma independente; o mestre agrega e sintetiza a final. | N× **minion** + **mestre** agregador |
-| **Debate** (clássico) | N cópias do *mesmo* SLM respondem e revisam vendo as respostas das outras; a final sai por **voto majoritário**, sem juiz. | N× **minion** |
-
-Os dois "agente sozinho" saem do mesmo grafo, mudando só qual modelo é usado —
-servem de piso e teto para ler os protocolos do meio.
-
-A tarefa de avaliação é o **GSM8K** (matemática escolar): a resposta final é
-sempre um número, então o acerto é verificado por script, sem juiz humano.
+A orquestração de cada protocolo é um grafo de estados em **LangGraph**; os
+modelos rodam localmente via **HuggingFace Transformers**. As duas camadas são
+independentes: o protocolo não sabe qual modelo está por baixo, e vice-versa.
 
 ---
 
-## Arquitetura
-
-Orquestração em **LangGraph** (cada protocolo é um grafo de estados) e modelos
-locais via **HuggingFace Transformers**. As duas camadas são independentes: o
-grafo nunca sabe qual modelo está por baixo, e o modelo nunca sabe em qual
-protocolo está. Isso mantém o código modular e fácil de estender.
-
-```
-config.py            # modelos, dataset, nº de rodadas, seed — tudo num lugar só
-src/
-  llm.py             # Backend (HF Transformers | Mock) + wrapper LLM + LLMHub
-  dataset.py         # carrega GSM8K (com fallback offline) e extrai a resposta-ouro
-  metrics.py         # extrai o número final, verifica acerto, agrega métricas
-  protocols/
-    base.py             # Protocol (classe-base) + registry + estado de contabilização
-    single_agent.py     # baselines (piso/teto): SLM ou LLM sozinho
-    minions.py          # delegação com nó condicional
-    mixture_of_agents.py# N propostas independentes + agregação pelo mestre
-    debate.py           # debate clássico: N cópias do SLM + voto majoritário
-runner.py            # roda os protocolos, agrega e salva os resultados
-scripts/
-  run_experiment.py  # ponto de entrada (CLI)
-results/             # saídas: raw_<protocolo>.json, summary.json/.csv
-```
-
-### Como cada grafo funciona
-
-**Single Agent / Single Minion** — `START → solve → END`. Uma chamada ao mestre
-(ou ao minion, no caso do piso).
-
-**Minions** — o minion responde; um nó condicional lê a saída:
-
-```
-START → minion ──(delegou?)──┬── sim → master → END
-                             └── não ───────────→ END
-```
-
-A decisão de delegar usa **auto-avaliação**: o minion é instruído a responder
-apenas `<DELEGAR>` quando estiver inseguro (token configurável em `config.py`).
-
-**Mixture-of-Agents** — `START → propose → aggregate → END`. N minions resolvem
-em paralelo (diversidade por temperatura); o mestre lê todas as propostas e
-sintetiza a resposta final, sem rodadas adversariais entre os proposers.
-
-**Debate** (clássico "society of minds", Du et al. 2023, arXiv:2305.14325) —
-loop de rodadas seguido da apuração do voto:
-
-```
-START → debate ──(round < N)──┐
-          ▲                    │
-          └────────────────────┘
-        debate ──(round == N)──→ tally → END
-```
-
-São N cópias do **mesmo** modelo (sem personas, sem juiz). Na rodada 0 cada
-agente responde de forma independente; nas seguintes, cada um revisa a própria
-resposta vendo as respostas dos outros. No fim, o nó `tally` decide a resposta
-final por **voto majoritário** sobre o número de cada agente (desempate
-determinístico pelo agente de menor índice).
-
----
-
-## Modelos e hardware
-
-Configurados em `config.py` (troque o `name` para usar outros pesos):
-
-- **Minion (SLM):** `Qwen/Qwen2.5-3B-Instruct` — rápido e leve.
-- **Mestre (LLM ≤ 20B):** `Qwen/Qwen2.5-14B-Instruct` — forte em raciocínio
-  matemático e cabe folgado numa **A100** (≈ 28 GB em bfloat16).
-
-Na A100 de 80 GB os dois modelos ficam residentes ao mesmo tempo, sem
-recarregamento entre protocolos (o `LLMHub` mantém cada modelo em cache). Se a
-VRAM apertar, ative `MASTER_4BIT=1` para carregar o mestre em 4-bit.
-
-> Família Qwen2.5 escolhida por ser forte em GSM8K e ter SLM e LLM ≤ 20B na
-> mesma família. Para reproduzir o setup original da conversa, é só trocar por
-> `meta-llama/Meta-Llama-3-8B-Instruct` (minion) e um modelo da casa dos 14B
-> como mestre.
-
----
-
-## Como rodar
+## 1. Ambiente (conda)
 
 ```bash
+conda create -n multiagent python=3.11 -y
+conda activate multiagent
 pip install -r requirements.txt
-
-# Experimento real na GPU (200 perguntas, conjunto padrão de protocolos):
-python scripts/run_experiment.py --gpu 0 --n 200
-
-# Subconjunto de protocolos (inclui o debate clássico, fora do padrão):
-python scripts/run_experiment.py --n 200 --protocols single_agent minions debate
-
-# Teste de fumaça SEM GPU e SEM baixar modelos (valida todo o encanamento):
-MULTIAGENT_BACKEND=mock python scripts/run_experiment.py --n 10
 ```
 
-O **backend mock** é determinístico e não usa modelo nenhum — serve para
-verificar, numa máquina sem GPU, que os grafos, a delegação, o voto e a
-contabilização funcionam de ponta a ponta. Ele não mede qualidade real.
+Isso instala LangGraph, Transformers, PyTorch (com CUDA), `datasets`, etc. Para
+rodar de verdade é preciso uma GPU; o Qwen2.5-32B usa carregamento em 4-bit
+(via `bitsandbytes`) e cabe numa A100.
+
+Para escolher a GPU, crie um arquivo `.env` (veja `.env.example`):
+
+```
+CUDA_VISIBLE_DEVICES=0
+```
+
+> Sem GPU dá para validar todo o encanamento com o backend falso:
+> `MULTIAGENT_BACKEND=mock python scripts/run_experiment.py --all --n 10`.
 
 ---
 
-## O que é medido
+## 2. Modelos
 
-Por pergunta (`results/raw_<protocolo>.json`) e agregado
-(`results/summary.csv`):
+Ficam no catálogo em `config.py` (`MODEL_CATALOG`); cada rodada escolhe o SLM e o
+mestre **por chave**:
 
-- **accuracy** — fração de respostas numéricas corretas.
-- **avg_latency_s** — tempo médio por pergunta (soma de todas as chamadas).
-- **avg_total_tokens** — tokens médios (prompt + geração).
-- **avg_master_tokens** — tokens gerados pelo LLM grande, o custo "caro".
-- **master_usage_rate** — fração de perguntas que acionaram o mestre.
-- **avg_model_calls** — número médio de chamadas a modelos por pergunta.
+| Chave | Modelo | Papel típico |
+|-------|--------|--------------|
+| `qwen2.5-32b` | Qwen2.5-32B-Instruct (4-bit) | mestre forte |
+| `qwen2.5-14b` | Qwen2.5-14B-Instruct | mestre médio |
+| `qwen3-4b`    | Qwen3-4B | SLM / mestre pequeno |
+| `phi4-mini`   | Phi-4-mini-instruct | SLM / mestre pequeno |
 
-A contabilização é acumulada automaticamente pelo grafo: os campos de uso no
-estado do LangGraph usam *reducers* de soma, então cada nó só precisa devolver
-sua própria delta.
-
----
-
-## Vantagens e desvantagens esperadas
-
-Análise qualitativa do que cada protocolo tende a entregar (a confirmar com a
-rodada real na A100):
-
-**Single Agent (mestre sozinho)** — teto de qualidade e a referência de custo
-máximo. Vantagem: melhor acurácia bruta e implementação trivial. Desvantagem:
-todo problema, fácil ou difícil, paga o preço do modelo grande (latência e
-tokens caros em 100% dos casos).
-
-**Minions (delegação)** — a aposta de custo-benefício. Vantagem: se o SLM
-resolve sozinho a maioria dos problemas fáceis, a `master_usage_rate` cai bem
-abaixo de 100%, derrubando latência média e custo enquanto a acurácia fica
-próxima da do mestre sozinho. Desvantagens: depende da **calibração da
-delegação** — se o minion for confiante demais, erra sem delegar (perde
-acurácia); se for cauteloso demais, delega tudo e vira o baseline com overhead
-extra.
-
-**Mixture-of-Agents** — qualidade via síntese. Vantagem: o mestre agrega várias
-propostas baratas do SLM e pode corrigir erros pontuais, sem o custo de rodadas
-adversariais. Desvantagem: ainda paga uma chamada do modelo grande por pergunta
-(o agregador), então custa mais que o Minions quando este não delega.
-
-**Debate (voto majoritário, sem juiz)** — qualidade via redundância **barata**:
-não usa o modelo grande, só N cópias do SLM. Vantagem: várias tentativas
-independentes que se revisam podem corrigir erros que uma só cometeria, a custo
-de tokens baratos. Custo: N agentes × R rodadas de chamadas ao SLM por pergunta
-(no default, 3 × 2 = 6 chamadas) — mais lento que os baselines. Risco: cópias
-idênticas podem convergir para o **mesmo erro** (diversidade real limitada), e o
-voto majoritário não cria conhecimento novo se a maioria já erra.
-
-O experimento existe justamente para colocar números nesse trade-off: quanto de
-acurácia o **Minions** preserva gastando uma fração do mestre, se o **MoA**
-compensa a chamada extra do agregador, e se o **Debate** entre SLMs baratos
-chega perto do mestre sozinho.
+Para usar outros pesos, basta adicionar uma entrada no catálogo. O campo
+`params_b` (nº de parâmetros em bilhões) alimenta a métrica de custo.
 
 ---
 
-## Estendendo (adicionar um novo protocolo)
+## 3. Métodos implementados
 
-1. Crie `src/protocols/meu_protocolo.py` com uma classe que herde de `Protocol`,
-   implemente `build_graph`, `initial_state` e `extract`, e decore com
-   `@register`.
-2. Importe-a em `src/protocols/__init__.py`.
-3. Adicione o nome em `EXPERIMENT.protocols` (em `config.py`) ou passe via
-   `--protocols`.
+Cada protocolo tem um nome (usado em `--protocols`):
 
-Nada mais muda: runner, métricas e relatórios já funcionam para qualquer
-protocolo registrado. Candidatos naturais: *self-consistency* (votação por
-maioria de N amostras do SLM) e *self-reflection* (o modelo revisa a própria
-resposta uma vez).
+- **`single_minion`** — um SLM resolve sozinho. É o piso de qualidade e custo.
+- **`single_agent`** — um único modelo (qualquer um do catálogo) resolve
+  sozinho, passo a passo. Serve de baseline/teto para cada modelo.
+- **`minions`** — delegação: o SLM tenta resolver e, se não tiver confiança,
+  delega ao mestre (LLM grande). *(Em redesenho para a forma do paper, com N
+  SLMs e decomposição em subtarefas.)*
+- **`debate`** — "society of minds" (Du et al. 2023): N cópias do **mesmo** SLM
+  respondem e revisam suas respostas vendo as dos outros por algumas rodadas; a
+  resposta final sai por **voto majoritário**, sem mestre.
+- **`mixture_of_agents`** — MoA (Wang et al. 2024): N SLMs propõem soluções de
+  forma independente e o **mestre agrega/sintetiza** a final (1 camada, sem
+  rodadas adversariais).
+- **`foa`** — Federation of Agents (Giusti et al. 2025), só a parte de resolver:
+  uma frota de N SLMs faz um rascunho, **refina por k rodadas vendo os pares**
+  (peer review, com parada antecipada por consenso) e um **orquestrador (o
+  mestre) sintetiza** a resposta final. Difere do debate (que vota, sem mestre)
+  e do MoA (que não refina entre rodadas).
+
+O **número de SLMs da frota** (`--n-minions`, normalmente 2–4) vale para
+`debate`, `mixture_of_agents` e `foa`. Os modelos "sozinhos" usam 1; o `minions`
+usa 1 SLM + mestre.
+
+---
+
+## 4. Como rodar
+
+Três níveis, do mais específico ao mais amplo.
+
+### 4.1 Uma rodada (uma configuração exata)
+
+`scripts/run_experiment.py` roda os protocolos que você listar, com modelos e
+frota fixos:
+
+```bash
+# FoA com frota de 3 Phi-4-mini e mestre Qwen2.5-32B, 200 perguntas, GPU 0:
+python scripts/run_experiment.py --protocols foa \
+    --minion phi4-mini --master qwen2.5-32b --n-minions 3 --gpu 0 --n 200
+
+# baseline: o modelo grande sozinho
+python scripts/run_experiment.py --protocols single_agent --master qwen2.5-32b --gpu 0
+
+# debate com 4 cópias do Qwen3-4B (debate não usa mestre)
+python scripts/run_experiment.py --protocols debate --minion qwen3-4b --n-minions 4 --gpu 0
+
+# todos os protocolos de uma vez, com a config dada
+python scripts/run_experiment.py --all --minion qwen3-4b --master qwen2.5-14b --n-minions 3 --gpu 0
+```
+
+### 4.2 Um protocolo, varrendo suas variações
+
+`scripts/run_sweep.py --protocols <nome>` roda **um experimento por variação**
+do protocolo (cada protocolo varia só nos eixos que fazem sentido — veja
+`src/experiments.py`):
+
+```bash
+python scripts/run_sweep.py --protocols foa --gpu 0 --n 200      # 24 experimentos
+python scripts/run_sweep.py --protocols debate --gpu 0 --n 200   # 6 experimentos
+python scripts/run_sweep.py --protocols mixture_of_agents foa --gpu 0 --n 200
+```
+
+Eixos restringíveis: `--slms`, `--masters`, `--counts`. Use `--dry-run` para só
+listar o plano:
+
+```bash
+python scripts/run_sweep.py --protocols foa --slms phi4-mini --counts 2 3 --dry-run
+```
+
+### 4.3 Grade completa (todos os protocolos × variações)
+
+```bash
+python scripts/run_sweep.py --gpu 0 --n 200          # 38 experimentos
+# ou o atalho:
+bash scripts/run_sweep.sh 0 200
+```
+
+O sweep compartilha o backend entre as rodadas, então cada modelo é carregado
+**uma vez** na VRAM e reutilizado. Numa A100 de 40 GB, se faltar memória, use
+`--no-share` (recarrega por rodada).
+
+---
+
+## 5. Saídas e métricas
+
+Cada experimento (1 protocolo numa configuração) ganha **sua própria pasta**,
+nomeada pela config — assim nada se sobrescreve e dá pra saber na hora o que
+rodou:
+
+```
+results/
+  runs/
+    foa__min-qwen3-4b__mas-qwen2.5-32b__n2/
+      raw.json       # resultado pergunta a pergunta (com a contabilização)
+      summary.json   # métricas agregadas deste experimento
+      meta.json      # config completa: repos dos modelos, params, n, seed, rounds, timestamp
+    mixture_of_agents__min-phi4-mini__mas-qwen2.5-14b__n3/
+      ...
+  sweep_summary.csv  # 1 linha por experimento — a tabela mestre p/ análise
+  sweep_summary.json
+```
+
+O `slug` da pasta inclui o protocolo, então MoA e FoA com os mesmos modelos/N
+ficam separados. O `sweep_summary.csv` junta todas as rodadas; as colunas:
+
+| Métrica | O que é |
+|---------|---------|
+| `accuracy` | fração de respostas numéricas corretas |
+| `avg_latency_s` | tempo médio por pergunta |
+| `avg_total_tokens` | tokens médios (prompt + geração) |
+| `avg_compute_cost` | **custo computacional**: Σ (params_bi × tokens gerados) |
+| `master_usage_rate` | fração de perguntas que acionaram o mestre |
+| `avg_model_calls` | nº médio de chamadas a modelos por pergunta |
+
+O `compute_cost` é o eixo de custo do estudo: captura que gerar tokens num 32B
+"pesa" ~8× gerar no 4B, indo além da simples contagem de tokens.
+
+---
+
+## 6. Estrutura
+
+```
+config.py                # catálogo de modelos + parâmetros padrão de rodada
+src/
+  llm.py                 # backends (HF | mock), LLM e LLMHub (modelos da rodada)
+  dataset.py             # GSM8K (com fallback offline)
+  metrics.py             # extração da resposta, acerto e agregação (+ custo)
+  experiments.py         # geração da grade: variações por protocolo
+  runner.py              # roda uma rodada, agrega e salva
+  protocols/
+    base.py              # Protocol (classe-base) + registry + contabilização
+    single_agent.py      # single_agent / single_minion
+    minions.py           # delegação SLM → mestre
+    debate.py            # debate (voto majoritário)
+    mixture_of_agents.py # propostas + agregador
+    foa.py               # frota + refinamento + síntese
+scripts/
+  run_experiment.py      # uma rodada (uma config)
+  run_sweep.py           # varredura (um protocolo ou a grade inteira)
+  run_sweep.sh           # atalho da grade/protocolo
+results/
+  runs/<slug>/           # 1 pasta por experimento: raw.json, summary.json, meta.json
+  sweep_summary.csv      # tabela mestre (1 linha por experimento)
+```
+
+Adicionar um protocolo novo: crie `src/protocols/<nome>.py` com uma classe
+decorada com `@register`, importe-a em `src/protocols/__init__.py` e ele já fica
+disponível em `--protocols` e no sweep.

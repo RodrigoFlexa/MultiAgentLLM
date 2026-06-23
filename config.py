@@ -1,9 +1,14 @@
 """
 Configuração central do experimento.
 
-Tudo que você normalmente mexeria (modelos, tamanho da amostra, número de
-rodadas de debate, etc.) está concentrado aqui. Os módulos em `src/` apenas
-leem deste arquivo, então não há "números mágicos" espalhados pelo código.
+Pontos que você normalmente ajusta:
+  * MODEL_CATALOG  — quais modelos existem (repo no HF, nº de params, etc.);
+  * minion / master / n_minions — quais modelos e quantos SLMs uma rodada usa;
+  * DEBATE / FOA / MOA — nº de rodadas de refinamento de cada protocolo.
+
+A escolha de modelos é POR RODADA (não há mais modelo "fixo" hardcoded): o
+runner monta um LLMHub com os modelos pedidos. Isso é o que permite varrer a
+grade de experimentos (protocolo × SLM × mestre × nº de SLMs) por script.
 """
 from __future__ import annotations
 
@@ -12,131 +17,134 @@ from dataclasses import dataclass, field
 
 from dotenv import load_dotenv
 
-# Carrega o .env (se existir) antes de qualquer leitura de variável de
-# ambiente abaixo. Precisa rodar antes do primeiro `import torch` (que só
-# acontece sob demanda em `src/llm.py`), pois é isso que decide qual(is)
-# GPU(s) ficam visíveis para o processo.
+# Carrega o .env (se existir) antes de ler variáveis de ambiente. Precisa rodar
+# antes do primeiro `import torch` (lazy em src/llm.py), pois decide a GPU.
 load_dotenv()
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Modelos
+# Modelos: catálogo
 # ──────────────────────────────────────────────────────────────────────
 @dataclass(frozen=True)
 class ModelConfig:
-    """Identifica um modelo no HuggingFace Hub e seus limites de geração."""
-    name: str                 # repo_id no HuggingFace Hub
-    label: str                # nome curto usado em logs/relatórios
+    """Um modelo do HuggingFace Hub + metadados usados em custo/relatórios."""
+    name: str                  # repo_id no HuggingFace Hub
+    label: str                 # nome curto usado em logs/relatórios/arquivos
+    params_b: float            # nº de parâmetros em BILHÕES (base do custo)
     max_new_tokens: int = 512
+    load_in_4bit: bool = False  # quantizar em 4-bit ao carregar (modelos grandes)
 
 
-# O "minion": SLM rápido e barato, fica na linha de frente.
-MINION_MODEL = ModelConfig(
-    name="Qwen/Qwen2.5-3B-Instruct",
-    label="Qwen2.5-3B",
-    max_new_tokens=512,
-)
+# Catálogo de modelos disponíveis. Para usar outros pesos, é só adicionar uma
+# entrada aqui e referenciá-la pela chave em --minion / --master / no sweep.
+# params_b alimenta a métrica de custo computacional (≈ params × tokens).
+MODEL_CATALOG: dict[str, ModelConfig] = {
+    # Mestres "grandes/médios"
+    "qwen2.5-32b": ModelConfig(
+        "Qwen/Qwen2.5-32B-Instruct", "Qwen2.5-32B", params_b=32.0,
+        max_new_tokens=768, load_in_4bit=True,   # 4-bit p/ caber folgado na A100
+    ),
+    "qwen2.5-14b": ModelConfig(
+        "Qwen/Qwen2.5-14B-Instruct", "Qwen2.5-14B", params_b=14.0,
+        max_new_tokens=768,
+    ),
+    # Modelos pequenos (servem tanto de SLM/minion quanto de mestre "pequeno")
+    "qwen3-4b": ModelConfig(
+        "Qwen/Qwen3-4B", "Qwen3-4B", params_b=4.0, max_new_tokens=512,
+    ),
+    "phi4-mini": ModelConfig(
+        # Phi-4-mini-instruct tem ~3.8B params; ajuste params_b se preferir
+        # outra contagem (ela só afeta a métrica de custo).
+        "microsoft/Phi-4-mini-instruct", "Phi-4-mini", params_b=3.8,
+        max_new_tokens=512,
+    ),
+}
 
-# O "mestre": LLM mais capaz (<= 20B params, conforme pedido). Resolve o que
-# o minion não dá conta (Minions) e atua como agregador no Mixture-of-Agents.
-# Qwen2.5-14B é forte em raciocínio matemático (GSM8K) e cabe folgado numa A100.
-MASTER_MODEL = ModelConfig(
-    name="Qwen/Qwen2.5-14B-Instruct",
-    label="Qwen2.5-14B",
-    max_new_tokens=768,
-)
+
+def get_model(key: str) -> ModelConfig:
+    if key not in MODEL_CATALOG:
+        raise KeyError(f"Modelo {key!r} não está no catálogo. "
+                       f"Disponíveis: {sorted(MODEL_CATALOG)}")
+    return MODEL_CATALOG[key]
+
+
+# Defaults de uma rodada avulsa (o sweep sobrescreve estes).
+DEFAULT_MINION = "qwen3-4b"     # SLM da frota (debate/MoA/FoA) e do single_minion
+DEFAULT_MASTER = "qwen2.5-14b"  # orquestrador/mestre (single_agent, MoA, FoA, minions)
 
 
 # ──────────────────────────────────────────────────────────────────────
-# GPU
+# GPU / backend / decodificação
 # ──────────────────────────────────────────────────────────────────────
-# Qual(is) GPU(s) o processo pode ver, configurado no .env (veja .env.example)
-# via CUDA_VISIBLE_DEVICES (ex.: "0", "1", "0,1"). Se não estiver definida,
-# todas as GPUs visíveis na máquina ficam disponíveis (comportamento padrão
-# do CUDA/accelerate).
 GPU_DEVICE: str = os.environ.get("CUDA_VISIBLE_DEVICES", "")
 
-
-# ──────────────────────────────────────────────────────────────────────
-# Backend de inferência
-# ──────────────────────────────────────────────────────────────────────
-# "hf"   -> HuggingFace Transformers de verdade (precisa de GPU).
-# "mock" -> backend falso e determinístico, sem baixar nada. Serve para
-#           validar o encanamento do LangGraph e dos protocolos numa máquina
-#           sem GPU. Selecione com a variável de ambiente MULTIAGENT_BACKEND.
+# "hf" -> Transformers de verdade (GPU). "mock" -> backend falso (sem GPU).
 BACKEND: str = os.environ.get("MULTIAGENT_BACKEND", "hf")
-
-# dtype para o Transformers. "bfloat16" é o ideal na A100.
 TORCH_DTYPE: str = os.environ.get("MULTIAGENT_DTYPE", "bfloat16")
 
-# Carregar o master em 4-bit (bitsandbytes). Desnecessário numa A100 80GB,
-# útil se a VRAM apertar.
-MASTER_LOAD_IN_4BIT: bool = os.environ.get("MASTER_4BIT", "0") == "1"
 
-
-# ──────────────────────────────────────────────────────────────────────
-# Geração (decodificação)
-# ──────────────────────────────────────────────────────────────────────
 @dataclass(frozen=True)
 class GenerationConfig:
-    temperature: float = 0.0   # 0.0 => greedy/determinístico (bom p/ baseline)
+    temperature: float = 0.0   # 0.0 => greedy/determinístico
     top_p: float = 1.0
 
 
-# Decodificação determinística para single-agent e minion (reprodutibilidade).
 DETERMINISTIC = GenerationConfig(temperature=0.0, top_p=1.0)
-
-# Um pouco de temperatura no debate, para que os agentes divirjam de fato.
-CREATIVE = GenerationConfig(temperature=0.7, top_p=0.95)
+CREATIVE = GenerationConfig(temperature=0.7, top_p=0.95)  # diversidade na frota
 
 
 # ──────────────────────────────────────────────────────────────────────
 # Protocolos
 # ──────────────────────────────────────────────────────────────────────
+# O NÚMERO de SLMs (2..4) NÃO mora aqui: é parâmetro de rodada (n_minions),
+# carregado no LLMHub e lido pelos protocolos multi-agente (debate/MoA/FoA).
 @dataclass(frozen=True)
 class MinionsConfig:
-    # Token que o minion deve emitir quando não tem confiança na resposta.
     delegate_token: str = "<DELEGATE>"
 
 
 @dataclass(frozen=True)
 class DebateConfig:
-    """Debate clássico "society of minds" (Du et al. 2023, arXiv:2305.14325):
-    N cópias do MESMO modelo respondem e depois revisam suas respostas vendo as
-    dos outros, por algumas rodadas. A resposta final sai por VOTO MAJORITÁRIO,
-    sem juiz. A diversidade entre cópias idênticas vem da amostragem (CREATIVE)."""
-    n_agents: int = 3          # cópias homogêneas do minion que debatem
+    """Debate "society of minds" (Du et al. 2023): N cópias do SLM revisam-se
+    por rodadas; resposta final por voto majoritário, sem orquestrador."""
     n_rounds: int = 2          # rodadas no total (1 inicial + revisões)
 
 
 @dataclass(frozen=True)
 class MoAConfig:
-    """Mixture-of-Agents (Wang et al. 2024, arXiv:2406.04692): N minions
-    ("proposers") respondem de forma independente e o mestre ("agregador")
-    sintetiza a resposta final a partir das propostas — sem rodadas de
-    crítica adversarial entre eles, como no debate."""
-    n_proposers: int = 3        # minions independentes na camada de propostas
+    """Mixture-of-Agents (Wang et al. 2024): N SLMs propõem em paralelo e o
+    mestre agrega. 1 camada de propostas, sem rodadas adversariais."""
+    pass                        # nº de proposers = n_minions (parâmetro de rodada)
+
+
+@dataclass(frozen=True)
+class FoAConfig:
+    """Federation of Agents (Giusti et al. 2025, arXiv:2509.20175) — apenas a
+    forma de RESOLVER (sem roteamento semântico/DAG): uma frota de N SLMs faz um
+    rascunho, refina por k rodadas vendo os rascunhos dos pares (peer review) e
+    um único orquestrador (o mestre) sintetiza a resposta final."""
+    n_rounds: int = 2          # rodadas de refinamento da frota antes da síntese
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Experimento
+# Experimento (uma rodada totalmente especificada)
 # ──────────────────────────────────────────────────────────────────────
 @dataclass(frozen=True)
 class ExperimentConfig:
     dataset: str = "gsm8k"
     split: str = "test"
-    n_samples: int = 200       # amostra aleatória do GSM8K
+    n_samples: int = 200
     seed: int = 42
     results_dir: str = "results"
-    # Identificador opcional da rodada (ex.: "1"), usado como sufixo nos
-    # arquivos salvos em results_dir para não sobrescrever rodadas anteriores.
-    version: str | None = None
-    # Quais protocolos rodar (nomes registrados no registry).
-    # Ordem: piso (SLM sozinho) → teto (LLM sozinho) → meio (Minions, MoA).
-    # "debate" segue registrado e pode ser rodado via --protocols debate,
-    # mas saiu do conjunto padrão em favor do Mixture-of-Agents.
+    version: str | None = None     # sufixo opcional nos arquivos de saída
+
+    # Modelos e tamanho da frota desta rodada:
+    minion: str = DEFAULT_MINION   # chave no MODEL_CATALOG
+    master: str = DEFAULT_MASTER   # chave no MODEL_CATALOG
+    n_minions: int = 3             # nº de SLMs na frota (debate/MoA/FoA): 2..4
+
     protocols: tuple[str, ...] = (
-        "single_minion", "single_agent", "minions", "mixture_of_agents",
+        "single_minion", "single_agent", "minions", "mixture_of_agents", "foa",
     )
 
 
@@ -144,3 +152,4 @@ EXPERIMENT = ExperimentConfig()
 MINIONS = MinionsConfig()
 DEBATE = DebateConfig()
 MOA = MoAConfig()
+FOA = FoAConfig()

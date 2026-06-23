@@ -1,20 +1,19 @@
 """
 Camada de modelos.
 
-Expõe uma interface única e simples — `LLM.chat(messages)` — que os protocolos
-usam sem saber se por baixo está rodando HuggingFace Transformers numa GPU ou
-um backend falso (mock) numa máquina sem GPU.
+Interface única `LLM.chat(messages)`, sem o protocolo saber se por baixo roda
+HuggingFace Transformers numa GPU ou um backend falso (mock) sem GPU.
 
-Toda chamada devolve um `GenerationResult` com o texto E a contabilização
-(tokens e latência), que é o que permite comparar custo entre os protocolos.
+Cada chamada devolve um `GenerationResult` com texto + contabilização (tokens,
+latência e `params_b` do modelo que gerou) — base para comparar custo entre
+protocolos e entre escolhas de modelo.
 """
 from __future__ import annotations
 
 import hashlib
-import re
 import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 import config as cfg
@@ -29,6 +28,7 @@ Message = dict[str, str]  # {"role": "system"|"user"|"assistant", "content": str
 class GenerationResult:
     text: str
     model_label: str
+    params_b: float = 0.0          # params (bi) do modelo que gerou — p/ custo
     prompt_tokens: int = 0
     completion_tokens: int = 0
     latency_s: float = 0.0
@@ -37,13 +37,17 @@ class GenerationResult:
     def total_tokens(self) -> int:
         return self.prompt_tokens + self.completion_tokens
 
+    @property
+    def compute_cost(self) -> float:
+        """Proxy de custo computacional desta geração: params (bi) × tokens
+        gerados. Rodar um 32B por 100 tokens "pesa" ~8x um 4B por 100 tokens."""
+        return self.params_b * self.completion_tokens
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Backends de inferência
 # ──────────────────────────────────────────────────────────────────────
 class Backend(ABC):
-    """Contrato que qualquer motor de inferência precisa cumprir."""
-
     @abstractmethod
     def generate(
         self,
@@ -56,8 +60,9 @@ class Backend(ABC):
 
 
 class HFBackend(Backend):
-    """Backend real, baseado em `transformers`. Carrega modelos sob demanda
-    e os mantém em cache (um mesmo modelo nunca é carregado duas vezes)."""
+    """Backend real (`transformers`). Carrega modelos sob demanda e os mantém
+    em cache — crucial no sweep: o mesmo modelo nunca é recarregado, mesmo
+    entre experimentos diferentes que o reutilizem."""
 
     def __init__(self) -> None:
         self._cache: dict[str, tuple] = {}  # name -> (tokenizer, model)
@@ -70,7 +75,7 @@ class HFBackend(Backend):
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
         kwargs = dict(device_map="auto", torch_dtype=getattr(torch, cfg.TORCH_DTYPE))
-        if cfg.MASTER_LOAD_IN_4BIT and model_cfg.name == cfg.MASTER_MODEL.name:
+        if model_cfg.load_in_4bit:
             from transformers import BitsAndBytesConfig
 
             kwargs["quantization_config"] = BitsAndBytesConfig(
@@ -116,6 +121,7 @@ class HFBackend(Backend):
         return GenerationResult(
             text=text,
             model_label=model_cfg.label,
+            params_b=model_cfg.params_b,
             prompt_tokens=int(prompt_len),
             completion_tokens=int(completion_ids.shape[0]),
             latency_s=latency,
@@ -123,42 +129,29 @@ class HFBackend(Backend):
 
 
 class MockBackend(Backend):
-    """Backend falso e determinístico. Não baixa nem roda nenhum modelo.
-
-    Serve só para validar o encanamento (LangGraph + protocolos) numa máquina
-    sem GPU. Heurística de brinquedo:
-      * o minion "tem confiança" em problemas curtos e delega os longos;
-      * a resposta numérica é derivada de um hash do enunciado (estável).
-    Não mede qualidade de verdade — apenas faz o sistema rodar de ponta a ponta.
-    """
+    """Backend falso e determinístico (sem GPU, sem download). Heurística de
+    brinquedo só para validar o encanamento: delega quando o system-prompt pede
+    o token de delegação e o enunciado é longo; resposta numérica vem de um hash
+    estável do enunciado. Independente de qual modelo está configurado."""
 
     def generate(self, messages, model_cfg, gen_cfg, max_new_tokens=None):
         system = " ".join(m["content"] for m in messages if m["role"] == "system")
         user = " ".join(m["content"] for m in messages if m["role"] == "user")
-        is_minion = model_cfg.name == cfg.MINION_MODEL.name
 
-        # Pseudo-resposta estável a partir do enunciado.
         digest = int(hashlib.sha1(user.encode()).hexdigest(), 16)
         pseudo_answer = digest % 100
 
-        # Minion delega problemas "difíceis" (heurística: enunciado longo).
-        delegate = (
-            is_minion
-            and cfg.MINIONS.delegate_token in system
-            and len(user) > 200
-        )
+        delegate = cfg.MINIONS.delegate_token in system and len(user) > 200
         if delegate:
             text = cfg.MINIONS.delegate_token
         else:
-            text = (
-                f"Solving step by step (mock).\n"
-                f"#### {pseudo_answer}"
-            )
+            text = f"Solving step by step (mock).\n#### {pseudo_answer}"
 
-        time.sleep(0.001)  # latência simbólica
+        time.sleep(0.001)
         return GenerationResult(
             text=text,
             model_label=model_cfg.label,
+            params_b=model_cfg.params_b,
             prompt_tokens=len((system + user).split()),
             completion_tokens=len(text.split()),
             latency_s=0.001,
@@ -166,7 +159,7 @@ class MockBackend(Backend):
 
 
 # ──────────────────────────────────────────────────────────────────────
-# LLM: um modelo + um backend, com interface de chat
+# LLM: um modelo + um backend
 # ──────────────────────────────────────────────────────────────────────
 class LLM:
     def __init__(self, model_cfg: cfg.ModelConfig, backend: Backend):
@@ -187,9 +180,9 @@ class LLM:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Hub: cria/serve os LLMs compartilhando um único backend
+# Hub: contexto de execução de UMA rodada (modelos + tamanho da frota)
 # ──────────────────────────────────────────────────────────────────────
-def _make_backend() -> Backend:
+def make_backend() -> Backend:
     if cfg.BACKEND == "mock":
         return MockBackend()
     if cfg.BACKEND == "hf":
@@ -198,16 +191,28 @@ def _make_backend() -> Backend:
 
 
 class LLMHub:
-    """Ponto único de acesso aos modelos. Os protocolos pedem `hub.minion`
-    e `hub.master`; o backend (real ou mock) é compartilhado entre eles."""
+    """Reúne, para uma rodada, o SLM (minion), o mestre (master) e o tamanho da
+    frota (n_minions). Os protocolos pedem `hub.minion`, `hub.master`,
+    `hub.minion_agent()` e `hub.n_minions` — sem conhecer os modelos concretos.
 
-    def __init__(self, backend: Optional[Backend] = None):
-        self.backend = backend or _make_backend()
-        self.minion = LLM(cfg.MINION_MODEL, self.backend)
-        self.master = LLM(cfg.MASTER_MODEL, self.backend)
+    O `backend` pode (e deve, no sweep) ser compartilhado entre vários hubs,
+    para reaproveitar os modelos já carregados na VRAM."""
+
+    def __init__(
+        self,
+        minion_model: Optional[cfg.ModelConfig] = None,
+        master_model: Optional[cfg.ModelConfig] = None,
+        n_minions: int = cfg.EXPERIMENT.n_minions,
+        backend: Optional[Backend] = None,
+    ):
+        self.backend = backend or make_backend()
+        self.minion_model = minion_model or cfg.get_model(cfg.DEFAULT_MINION)
+        self.master_model = master_model or cfg.get_model(cfg.DEFAULT_MASTER)
+        self.n_minions = n_minions
+        self.minion = LLM(self.minion_model, self.backend)
+        self.master = LLM(self.master_model, self.backend)
 
     def minion_agent(self) -> LLM:
-        """Nova instância do minion, para protocolos que rodam várias cópias
-        em paralelo (debate, mixture-of-agents) com prompts diferentes sobre
-        o mesmo modelo e backend compartilhado."""
-        return LLM(cfg.MINION_MODEL, self.backend)
+        """Uma instância de SLM da frota (mesmo modelo/backend; protocolos rodam
+        N delas em paralelo com prompts diferentes)."""
+        return LLM(self.minion_model, self.backend)

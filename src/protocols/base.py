@@ -1,13 +1,13 @@
 """
 Fundação dos protocolos.
 
-Tudo que os três protocolos compartilham mora aqui:
-  * o estado de "contabilização" do LangGraph (tokens/latência que se acumulam
-    automaticamente conforme o grafo avança, via reducers);
+Tudo que os protocolos compartilham:
+  * o estado de "contabilização" do LangGraph (tokens/latência/custo que se
+    acumulam sozinhos via reducers de soma);
   * a classe-base `Protocol` (constrói o grafo, roda uma pergunta, devolve um
     `QueryResult` padronizado);
-  * um registry (`@register`) para que adicionar um 4º protocolo seja só criar
-    um arquivo novo e decorá-lo — nada além disso precisa mudar.
+  * um registry (`@register`) — adicionar um protocolo é criar um arquivo e
+    decorá-lo.
 """
 from __future__ import annotations
 
@@ -28,18 +28,15 @@ class UsageState(TypedDict, total=False):
     total_tokens: Annotated[int, operator.add]
     master_tokens: Annotated[int, operator.add]
     minion_tokens: Annotated[int, operator.add]
+    compute_cost: Annotated[float, operator.add]   # Σ params_b × tokens gerados
     n_model_calls: Annotated[int, operator.add]
     used_master: Annotated[bool, operator.or_]
 
 
-_USAGE_KEYS = ("latency_s", "total_tokens", "master_tokens",
-               "minion_tokens", "n_model_calls", "used_master")
-
-
 def empty_usage() -> dict[str, Any]:
-    """Valores iniciais; os reducers somam as deltas em cima destes."""
     return {"latency_s": 0.0, "total_tokens": 0, "master_tokens": 0,
-            "minion_tokens": 0, "n_model_calls": 0, "used_master": False}
+            "minion_tokens": 0, "compute_cost": 0.0, "n_model_calls": 0,
+            "used_master": False}
 
 
 def usage_delta(gen: GenerationResult, *, is_master: bool) -> dict[str, Any]:
@@ -49,19 +46,20 @@ def usage_delta(gen: GenerationResult, *, is_master: bool) -> dict[str, Any]:
         "total_tokens": gen.total_tokens,
         "master_tokens": gen.completion_tokens if is_master else 0,
         "minion_tokens": 0 if is_master else gen.completion_tokens,
+        "compute_cost": gen.compute_cost,
         "n_model_calls": 1,
         "used_master": is_master,
     }
 
 
 def combine_usage(gens: list[GenerationResult], *, is_master: bool) -> dict[str, Any]:
-    """Soma as deltas de várias gerações feitas dentro de um único nó
-    (ex.: uma rodada de debate com vários agentes)."""
+    """Soma as deltas de várias gerações feitas num único nó (ex.: uma rodada
+    de frota com vários SLMs)."""
     out = empty_usage()
     for g in gens:
         d = usage_delta(g, is_master=is_master)
         for k in ("latency_s", "total_tokens", "master_tokens",
-                  "minion_tokens", "n_model_calls"):
+                  "minion_tokens", "compute_cost", "n_model_calls"):
             out[k] += d[k]
         out["used_master"] = out["used_master"] or d["used_master"]
     return out
@@ -71,8 +69,8 @@ def combine_usage(gens: list[GenerationResult], *, is_master: bool) -> dict[str,
 # Prompts compartilhados
 # ──────────────────────────────────────────────────────────────────────
 SOLVE_SYSTEM = (
-    "You solve math problems carefully. Think step by step "
-    "and ALWAYS end with a line in the format:\n#### <final number>"
+    "You carefully solve math problems. Think step by step and ALWAYS end with "
+    "a line in the format:\n#### <final number>"
 )
 
 
@@ -118,6 +116,7 @@ class Protocol(ABC):
             total_tokens=final.get("total_tokens", 0),
             master_tokens=final.get("master_tokens", 0),
             minion_tokens=final.get("minion_tokens", 0),
+            compute_cost=final.get("compute_cost", 0.0),
             used_master=final.get("used_master", False),
             n_model_calls=final.get("n_model_calls", 0),
             extra=extra,
@@ -125,7 +124,7 @@ class Protocol(ABC):
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Registry: adicionar um protocolo = criar arquivo + @register
+# Registry
 # ──────────────────────────────────────────────────────────────────────
 _REGISTRY: dict[str, type[Protocol]] = {}
 

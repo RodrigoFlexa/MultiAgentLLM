@@ -1,21 +1,14 @@
 """
 Protocolo — Mixture-of-Agents (MoA).
 
-Camada de "proposers": N cópias do minion resolvem o problema de forma
-independente. Um "agregador" (o LLM mestre) lê todas as propostas e sintetiza
-uma única resposta final, criticando o que estiver errado em vez de só
-repetir uma delas — sem rodadas de crítica adversarial entre os proposers,
-que é o ponto que tornava o debate caro e instável.
+Wang et al., "Mixture-of-Agents Enhances Large Language Model Capabilities"
+(2024, arXiv:2406.04692).
 
-Grafo (camada única de propostas + 1 agregação):
-    START → propose → aggregate → END
+Camada de "proposers": N cópias do SLM (frota = hub.n_minions) resolvem o
+problema de forma independente. Um "agregador" (o mestre) lê todas as propostas
+e sintetiza a resposta final — sem rodadas adversariais entre os proposers.
 
-Referência: Wang et al., "Mixture-of-Agents Enhances Large Language Model
-Capabilities" (2024, arXiv:2406.04692). O paper original usa modelos
-heterogêneos como proposers e várias camadas de agregação; aqui, com um único
-modelo minion disponível, a diversidade vem da amostragem (temperatura), de
-forma análoga ao self-consistency — e usamos 1 única camada, que já concentra
-o ganho principal do método sobre debate/voto majoritário simples.
+Grafo:  START → propose → aggregate → END
 """
 from __future__ import annotations
 
@@ -31,11 +24,11 @@ from src.protocols.base import (
 )
 
 _AGGREGATOR_SYSTEM = (
-    "You received independent answers from several models for the same "
-    "math problem. Some may be wrong or contain reasoning errors. Evaluate "
-    "each one carefully, do not blindly copy any of them, and produce the "
-    "correct, most complete and coherent final answer. Think step by step "
-    "and ALWAYS end with a line '#### <final number>'."
+    "You have received independent responses from several models to the same "
+    "math problem. Some may be wrong or contain reasoning errors. Evaluate each "
+    "carefully, do not blindly copy any of them, and produce the correct, most "
+    "complete and coherent final answer. Think step by step and ALWAYS end with "
+    "a line '#### <final number>'."
 )
 
 
@@ -50,7 +43,7 @@ class MixtureOfAgents(Protocol):
     name = "mixture_of_agents"
 
     def build_graph(self):
-        self.n_proposers = cfg.MOA.n_proposers
+        self.n_proposers = self.hub.n_minions    # tamanho da frota (parâmetro de rodada)
 
         g = StateGraph(State)
         g.add_node("propose", self._propose)
@@ -60,17 +53,14 @@ class MixtureOfAgents(Protocol):
         g.add_edge("aggregate", END)
         return g.compile()
 
-    # ── nós ────────────────────────────────────────────────────────────
     def _propose(self, state: State) -> dict[str, Any]:
         question = state["question"]
         gens = [
             self.hub.minion_agent().chat(solve_messages(question), gen_cfg=cfg.CREATIVE)
             for _ in range(self.n_proposers)
         ]
-        return {
-            "proposals": [g.text for g in gens],
-            **combine_usage(gens, is_master=False),
-        }
+        return {"proposals": [g.text for g in gens],
+                **combine_usage(gens, is_master=False)}
 
     def _aggregate(self, state: State) -> dict[str, Any]:
         question = state["question"]
@@ -80,12 +70,11 @@ class MixtureOfAgents(Protocol):
         msgs = [
             {"role": "system", "content": _AGGREGATOR_SYSTEM},
             {"role": "user", "content":
-                f"Problem:\n{question}\n\nModel proposals:\n{bloco}"},
+                f"Problem:\n{question}\n\nModels' proposals:\n{bloco}"},
         ]
         gen = self.hub.master.chat(msgs)
         return {"answer": gen.text, **usage_delta(gen, is_master=True)}
 
-    # ── plumbing ──────────────────────────────────────────────────────
     def initial_state(self, sample: Sample) -> dict[str, Any]:
         return {"question": sample.question, "proposals": [], **empty_usage()}
 

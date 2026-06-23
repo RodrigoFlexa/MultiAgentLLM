@@ -1,3 +1,0 @@
-protocol,n,accuracy,avg_latency_s,avg_total_tokens,avg_master_tokens,master_usage_rate,avg_model_calls
-mixture_of_agents,300,0.9066666666666666,42.39207386716579,2406.9933333333333,200.84333333333333,1,4
-debate,300,0.8733333333333333,61.44864906804326,4246.506666666667,0,0,6
