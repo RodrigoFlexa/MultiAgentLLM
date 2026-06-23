@@ -21,7 +21,7 @@ pip install -r requirements.txt
 
 Isso instala LangGraph, Transformers, PyTorch (com CUDA), `datasets`, etc. Para
 rodar de verdade é preciso uma GPU; o Qwen2.5-32B usa carregamento em 4-bit
-(via `bitsandbytes`) e cabe numa A100.
+(via `bitsandbytes`)
 
 ---
 
