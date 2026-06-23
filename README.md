@@ -80,18 +80,18 @@ Três níveis, do mais específico ao mais amplo.
 frota fixos:
 
 ```bash
-# FoA com frota de 3 Phi-4-mini e mestre Qwen2.5-32B, 200 perguntas, GPU 0:
+# FoA com frota de 3 Phi-4-mini e mestre Qwen2.5-32B, 200 perguntas:
 python scripts/run_experiment.py --protocols foa \
-    --minion phi4-mini --master qwen2.5-32b --n-minions 3 --gpu 0 --n 200
+    --minion phi4-mini --master qwen2.5-32b --n-minions 3  --n 200
 
 # baseline: o modelo grande sozinho
-python scripts/run_experiment.py --protocols single_agent --master qwen2.5-32b --gpu 0
+python scripts/run_experiment.py --protocols single_agent --master qwen2.5-32b 
 
 # debate com 4 cópias do Qwen3-4B (debate não usa mestre)
-python scripts/run_experiment.py --protocols debate --minion qwen3-4b --n-minions 4 --gpu 0
+python scripts/run_experiment.py --protocols debate --minion qwen3-4b --n-minions 4 
 
 # todos os protocolos de uma vez, com a config dada
-python scripts/run_experiment.py --all --minion qwen3-4b --master qwen2.5-14b --n-minions 3 --gpu 0
+python scripts/run_experiment.py --all --minion qwen3-4b --master qwen2.5-14b --n-minions 3 
 ```
 
 ### 4.2 Um protocolo, varrendo suas variações
@@ -101,9 +101,9 @@ do protocolo (cada protocolo varia só nos eixos que fazem sentido — veja
 `src/experiments.py`):
 
 ```bash
-python scripts/run_sweep.py --protocols foa --gpu 0 --n 200      # 24 experimentos
-python scripts/run_sweep.py --protocols debate --gpu 0 --n 200   # 6 experimentos
-python scripts/run_sweep.py --protocols mixture_of_agents foa --gpu 0 --n 200
+python scripts/run_sweep.py --protocols foa  --n 200      # 24 experimentos
+python scripts/run_sweep.py --protocols debate  --n 200   # 6 experimentos
+python scripts/run_sweep.py --protocols mixture_of_agents foa  --n 200
 ```
 
 Eixos restringíveis: `--slms`, `--masters`, `--counts`. Use `--dry-run` para só
@@ -116,7 +116,7 @@ python scripts/run_sweep.py --protocols foa --slms phi4-mini --counts 2 3 --dry-
 ### 4.3 Grade completa (todos os protocolos × variações)
 
 ```bash
-python scripts/run_sweep.py --gpu 0 --n 200          # 38 experimentos
+python scripts/run_sweep.py  --n 200          # 38 experimentos
 # ou o atalho:
 bash scripts/run_sweep.sh 0 200
 ```
