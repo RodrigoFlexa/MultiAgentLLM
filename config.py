@@ -96,7 +96,7 @@ CREATIVE = GenerationConfig(temperature=0.7, top_p=0.95)
 @dataclass(frozen=True)
 class MinionsConfig:
     # Token que o minion deve emitir quando não tem confiança na resposta.
-    delegate_token: str = "<DELEGAR>"
+    delegate_token: str = "<DELEGATE>"
 
 
 @dataclass(frozen=True)
@@ -128,6 +128,9 @@ class ExperimentConfig:
     n_samples: int = 200       # amostra aleatória do GSM8K
     seed: int = 42
     results_dir: str = "results"
+    # Identificador opcional da rodada (ex.: "1"), usado como sufixo nos
+    # arquivos salvos em results_dir para não sobrescrever rodadas anteriores.
+    version: str | None = None
     # Quais protocolos rodar (nomes registrados no registry).
     # Ordem: piso (SLM sozinho) → teto (LLM sozinho) → meio (Minions, MoA).
     # "debate" segue registrado e pode ser rodado via --protocols debate,

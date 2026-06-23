@@ -65,15 +65,15 @@ class Debate(Protocol):
     # ── prompts ────────────────────────────────────────────────────────
     def _revise_msgs(self, question: str, i: int, others: list[str]) -> list[dict]:
         bloco = "\n\n".join(
-            f"[Agente {j+1}]\n{ans}" for j, ans in enumerate(others) if j != i
+            f"[Agent {j+1}]\n{ans}" for j, ans in enumerate(others) if j != i
         )
         user = (
-            f"Problema:\n{question}\n\n"
-            f"Estas são as soluções de outros agentes para o mesmo problema:\n"
+            f"Problem:\n{question}\n\n"
+            f"These are other agents' solutions to the same problem:\n"
             f"{bloco}\n\n"
-            "Use as soluções dos outros agentes como informação adicional, "
-            "revise seu raciocínio e dê sua resposta atualizada, terminando "
-            "com uma linha '#### <número final>'."
+            "Use the other agents' solutions as additional information, "
+            "revise your reasoning and give your updated answer, ending "
+            "with a line '#### <final number>'."
         )
         return solve_messages(user)
 

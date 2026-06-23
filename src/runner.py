@@ -39,18 +39,26 @@ def run_protocol(name: str, hub: LLMHub, samples) -> list[QueryResult]:
     return results
 
 
-def _save_raw(results_dir: str, name: str, results: list[QueryResult]) -> None:
-    path = os.path.join(results_dir, f"raw_{name}.json")
+def _suffix(version: str | None) -> str:
+    return f"_v{version}" if version else ""
+
+
+def _save_raw(results_dir: str, name: str, results: list[QueryResult],
+              version: str | None = None) -> None:
+    path = os.path.join(results_dir, f"raw_{name}{_suffix(version)}.json")
     with open(path, "w", encoding="utf-8") as f:
         json.dump([asdict(r) for r in results], f, ensure_ascii=False, indent=2)
 
 
-def _save_summary(results_dir: str, aggs: list[Aggregate]) -> None:
+def _save_summary(results_dir: str, aggs: list[Aggregate],
+                   version: str | None = None) -> None:
     rows = [a.as_row() for a in aggs]
-    with open(os.path.join(results_dir, "summary.json"), "w", encoding="utf-8") as f:
+    suffix = _suffix(version)
+    with open(os.path.join(results_dir, f"summary{suffix}.json"), "w",
+              encoding="utf-8") as f:
         json.dump(rows, f, ensure_ascii=False, indent=2)
     if rows:
-        with open(os.path.join(results_dir, "summary.csv"), "w", newline="",
+        with open(os.path.join(results_dir, f"summary{suffix}.csv"), "w", newline="",
                   encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
             writer.writeheader()
@@ -75,6 +83,8 @@ def run_experiment(exp: cfg.ExperimentConfig = cfg.EXPERIMENT) -> list[Aggregate
     gpu = os.environ.get("CUDA_VISIBLE_DEVICES") or "(todas visíveis)"
     print(f"GPU(s): {gpu} | Backend: {cfg.BACKEND} | "
           f"Minion: {cfg.MINION_MODEL.label} | Mestre: {cfg.MASTER_MODEL.label}")
+    if exp.version:
+        print(f"Versão da rodada: {exp.version}")
     print(f"Carregando {exp.n_samples} amostras de {exp.dataset} (seed={exp.seed})...")
     samples = load_samples(exp.n_samples, exp.seed, exp.dataset, exp.split)
     print(f"{len(samples)} perguntas carregadas.\n")
@@ -87,10 +97,10 @@ def run_experiment(exp: cfg.ExperimentConfig = cfg.EXPERIMENT) -> list[Aggregate
             continue
         print(f"▶ Rodando protocolo: {name}")
         results = run_protocol(name, hub, samples)
-        _save_raw(exp.results_dir, name, results)
+        _save_raw(exp.results_dir, name, results, exp.version)
         aggs.append(aggregate(name, results))
 
-    _save_summary(exp.results_dir, aggs)
+    _save_summary(exp.results_dir, aggs, exp.version)
     _print_table(aggs)
     print(f"Resultados salvos em: {exp.results_dir}/")
     return aggs

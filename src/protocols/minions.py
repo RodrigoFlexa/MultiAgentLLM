@@ -28,11 +28,11 @@ from src.protocols.base import (
 _DELEGATE = cfg.MINIONS.delegate_token
 
 MINION_SYSTEM = (
-    "Você é um assistente pequeno e rápido que resolve problemas de matemática.\n"
-    "Resolva passo a passo APENAS se tiver alta confiança e os passos forem "
-    "claros, terminando com uma linha '#### <número final>'.\n"
-    f"Se houver qualquer dúvida, ou o problema for complexo demais, responda "
-    f"ESTRITAMENTE com '{_DELEGATE}' e mais nada."
+    "You are a small, fast assistant that solves math problems.\n"
+    "Solve step by step ONLY if you have high confidence and the steps are "
+    "clear, ending with a line '#### <final number>'.\n"
+    f"If there is any doubt, or the problem is too complex, respond "
+    f"STRICTLY with '{_DELEGATE}' and nothing else."
 )
 
 

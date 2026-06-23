@@ -22,6 +22,8 @@ Flags úteis:
                       1319 perguntas; pedir mais que isso usa todas elas)
     --seed S         seed da amostragem
     --protocols ...  subconjunto de protocolos (default: o conjunto padrão)
+    --version V      identificador da rodada (ex.: "1"); vira sufixo
+                      _v<version> nos arquivos salvos em results/
 """
 from __future__ import annotations
 
@@ -59,6 +61,9 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=cfg.EXPERIMENT.seed)
     parser.add_argument("--protocols", nargs="+", default=None,
                         help=f"subconjunto de {available()}")
+    parser.add_argument("--version", type=str, default=None,
+                        help="identificador da rodada (ex.: '1'); vira sufixo "
+                             "_v<version> nos arquivos salvos em results/")
     args = parser.parse_args()
 
     if args.gpu is not None:
@@ -77,7 +82,7 @@ def main() -> None:
     from src.runner import run_experiment
 
     exp = replace(cfg.EXPERIMENT, n_samples=args.n, seed=args.seed,
-                  protocols=protocols)
+                  protocols=protocols, version=args.version)
     run_experiment(exp)
 
 

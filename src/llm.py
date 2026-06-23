@@ -151,7 +151,7 @@ class MockBackend(Backend):
             text = cfg.MINIONS.delegate_token
         else:
             text = (
-                f"Resolvendo passo a passo (mock).\n"
+                f"Solving step by step (mock).\n"
                 f"#### {pseudo_answer}"
             )
 
@@ -211,4 +211,3 @@ class LLMHub:
         em paralelo (debate, mixture-of-agents) com prompts diferentes sobre
         o mesmo modelo e backend compartilhado."""
         return LLM(cfg.MINION_MODEL, self.backend)
-kend)

@@ -71,8 +71,8 @@ def combine_usage(gens: list[GenerationResult], *, is_master: bool) -> dict[str,
 # Prompts compartilhados
 # ──────────────────────────────────────────────────────────────────────
 SOLVE_SYSTEM = (
-    "Você resolve problemas de matemática com cuidado. Pense passo a passo "
-    "e termine SEMPRE com uma linha no formato:\n#### <número final>"
+    "You solve math problems carefully. Think step by step "
+    "and ALWAYS end with a line in the format:\n#### <final number>"
 )
 
 

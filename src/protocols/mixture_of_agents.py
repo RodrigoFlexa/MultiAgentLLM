@@ -31,11 +31,11 @@ from src.protocols.base import (
 )
 
 _AGGREGATOR_SYSTEM = (
-    "Você recebeu respostas independentes de vários modelos para o mesmo "
-    "problema de matemática. Algumas podem estar erradas ou conter erros de "
-    "raciocínio. Avalie cada uma com cuidado, não copie nenhuma às cegas, e "
-    "produza a resposta final correta, mais completa e coerente. Pense passo "
-    "a passo e termine SEMPRE com uma linha '#### <número final>'."
+    "You received independent answers from several models for the same "
+    "math problem. Some may be wrong or contain reasoning errors. Evaluate "
+    "each one carefully, do not blindly copy any of them, and produce the "
+    "correct, most complete and coherent final answer. Think step by step "
+    "and ALWAYS end with a line '#### <final number>'."
 )
 
 
@@ -75,12 +75,12 @@ class MixtureOfAgents(Protocol):
     def _aggregate(self, state: State) -> dict[str, Any]:
         question = state["question"]
         bloco = "\n\n".join(
-            f"[Proposta {i+1}]\n{p}" for i, p in enumerate(state.get("proposals", []))
+            f"[Proposal {i+1}]\n{p}" for i, p in enumerate(state.get("proposals", []))
         )
         msgs = [
             {"role": "system", "content": _AGGREGATOR_SYSTEM},
             {"role": "user", "content":
-                f"Problema:\n{question}\n\nPropostas dos modelos:\n{bloco}"},
+                f"Problem:\n{question}\n\nModel proposals:\n{bloco}"},
         ]
         gen = self.hub.master.chat(msgs)
         return {"answer": gen.text, **usage_delta(gen, is_master=True)}
