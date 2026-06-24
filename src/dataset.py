@@ -19,8 +19,8 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class Sample:
     question: str
-    gold: str          # resposta-ouro (string numérica, ex.: "18")
-    raw_answer: str = ""  # solução completa original (opcional)
+    gold: str          
+    raw_answer: str = ""  
 
 
 def _parse_gold(answer_field: str) -> str:
@@ -52,9 +52,6 @@ def load_gsm8k(n_samples: int, seed: int, split: str = "test") -> list[Sample]:
         return _fallback_samples(n_samples, seed)
 
 
-# ──────────────────────────────────────────────────────────────────────
-# Conjunto mínimo embutido (apenas para validar o pipeline offline)
-# ──────────────────────────────────────────────────────────────────────
 _FALLBACK = [
     Sample(
         "Natalia sold clips to 48 friends in April, and then she sold half as "
