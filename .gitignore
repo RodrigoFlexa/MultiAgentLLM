@@ -1,3 +1,5 @@
 venv/*
 venv/bin/accelerate-config
 .env
+__pycache__/
+*.pyc

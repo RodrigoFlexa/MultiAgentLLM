@@ -5,9 +5,10 @@ Roda os protocolos de UMA configuração (modelos + tamanho de frota fixos) sobr
 a amostra do GSM8K e salva, para CADA protocolo, uma pasta própria e isolada:
 
     results/runs/<slug>/
-        raw.json      # resultado pergunta a pergunta
-        summary.json  # métricas agregadas deste experimento (1 linha)
-        meta.json     # config completa: modelos+repos+params, n, seed, rounds...
+        raw.json         # resultado pergunta a pergunta
+        summary.json     # métricas agregadas deste experimento (1 linha)
+        meta.json        # config completa: modelos+repos+params, n, seed, rounds...
+        agent_costs.json # custo médio POR AGENTE (só protocolos que expõem isso)
 
 O `slug` inclui o protocolo, então experimentos distintos (ex.: MoA e FoA com os
 mesmos modelos/N) NUNCA se sobrescrevem. O `backend` pode ser compartilhado
@@ -19,6 +20,7 @@ import datetime
 import json
 import os
 import time
+from collections import defaultdict
 from dataclasses import asdict
 from typing import Optional
 
@@ -54,6 +56,36 @@ def _meta(exp: cfg.ExperimentConfig, protocol: str) -> dict:
     }
 
 
+def _agent_costs(results: list[QueryResult]) -> Optional[list[dict]]:
+    """Custo médio POR AGENTE ao longo das perguntas — responde 'quem trabalhou
+    mais'. Só vale para protocolos que exponham extra['agent_costs'] (ex.: foa_dag)."""
+    if not any(r.extra.get("agent_costs") for r in results):
+        return None
+    keys = ("completion_tokens", "prompt_tokens", "compute_cost", "latency_s", "n_calls")
+    sums: dict = defaultdict(lambda: {k: 0.0 for k in keys})
+    nq: dict = defaultdict(int)
+    for r in results:
+        for ac in r.extra.get("agent_costs", []):
+            a = ac["agent"]
+            for k in keys:
+                sums[a][k] += ac.get(k, 0)
+            nq[a] += 1
+    total_cc = sum(v["compute_cost"] for v in sums.values()) or 1.0
+    rows = []
+    for a in sorted(sums):
+        n = nq[a] or 1
+        rows.append({
+            "agent": a,
+            "avg_completion_tokens": round(sums[a]["completion_tokens"] / n, 2),
+            "avg_prompt_tokens": round(sums[a]["prompt_tokens"] / n, 2),
+            "avg_compute_cost": round(sums[a]["compute_cost"] / n, 2),
+            "avg_latency_s": round(sums[a]["latency_s"] / n, 4),
+            "avg_n_calls": round(sums[a]["n_calls"] / n, 2),
+            "share_compute_pct": round(100.0 * sums[a]["compute_cost"] / total_cc, 1),
+        })
+    return rows
+
+
 def run_protocol(name: str, hub: LLMHub, samples) -> list[QueryResult]:
     proto = get_protocol(name, hub)
     results: list[QueryResult] = []
@@ -69,7 +101,7 @@ def run_protocol(name: str, hub: LLMHub, samples) -> list[QueryResult]:
 
 
 def _save_run(exp: cfg.ExperimentConfig, protocol: str,
-              results: list[QueryResult], agg: Aggregate) -> str:
+              results: list[QueryResult], agg: Aggregate) -> tuple[str, Optional[list]]:
     run_dir = os.path.join(exp.results_dir, "runs", slug(exp, protocol))
     os.makedirs(run_dir, exist_ok=True)
     with open(os.path.join(run_dir, "raw.json"), "w", encoding="utf-8") as f:
@@ -78,7 +110,11 @@ def _save_run(exp: cfg.ExperimentConfig, protocol: str,
         json.dump(agg.as_row(), f, ensure_ascii=False, indent=2)
     with open(os.path.join(run_dir, "meta.json"), "w", encoding="utf-8") as f:
         json.dump(_meta(exp, protocol), f, ensure_ascii=False, indent=2)
-    return run_dir
+    agent_rows = _agent_costs(results)
+    if agent_rows is not None:
+        with open(os.path.join(run_dir, "agent_costs.json"), "w", encoding="utf-8") as f:
+            json.dump(agent_rows, f, ensure_ascii=False, indent=2)
+    return run_dir, agent_rows
 
 
 def print_table(aggs: list[Aggregate]) -> None:
@@ -119,8 +155,14 @@ def run_experiment(exp: cfg.ExperimentConfig = cfg.EXPERIMENT,
         results = run_protocol(name, hub, samples)
         agg = aggregate(name, results, minion=exp.minion, master=exp.master,
                         n_minions=exp.n_minions)
-        run_dir = _save_run(exp, name, results, agg)
+        run_dir, agent_rows = _save_run(exp, name, results, agg)
         print(f"  → {run_dir}/")
+        if agent_rows:
+            print("    custo por agente (fatia do total):")
+            for r in agent_rows:
+                print(f"      agente {r['agent']} (subtarefa {r['agent']}): "
+                      f"{r['share_compute_pct']:.1f}% | custo méd={r['avg_compute_cost']:.0f}"
+                      f" | tokens méd={r['avg_completion_tokens']:.0f}")
         aggs.append(agg)
 
     print_table(aggs)

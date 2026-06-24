@@ -18,6 +18,7 @@ Quais eixos cada protocolo usa:
   debate             → N SLMs, sem mestre          → varia: slms × counts
   mixture_of_agents  → N SLMs + mestre agregador   → varia: slms × masters × counts
   foa                → N SLMs + mestre orquestrador→ varia: slms × masters × counts
+  foa_dag            → decompõe em N subtarefas (DAG)→ varia: slms × masters × counts
 """
 from __future__ import annotations
 
@@ -28,7 +29,7 @@ import config as cfg
 # Protocolos incluídos por padrão na grade COMPLETA (single_minion é opt-in,
 # pois o single_agent já cobre cada modelo sozinho).
 DEFAULT_SWEEP_PROTOCOLS = (
-    "single_agent", "minions", "debate", "mixture_of_agents", "foa",
+    "single_agent", "minions", "debate", "mixture_of_agents", "foa", "foa_dag",
 )
 
 
@@ -51,7 +52,7 @@ def variations_for(protocol: str, slms, masters, counts) -> list[tuple[str, str,
         return [(s, m, 1) for s in slms for m in masters]
     if protocol == "debate":
         return [(s, s, n) for s in slms for n in counts]
-    if protocol in ("mixture_of_agents", "foa"):
+    if protocol in ("mixture_of_agents", "foa", "foa_dag"):
         return [(s, m, n) for s in slms for m in masters for n in counts]
     # protocolo desconhecido: varia todos os eixos
     return [(s, m, n) for s in slms for m in masters for n in counts]
