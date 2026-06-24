@@ -1,0 +1,14 @@
+{
+  "protocol": "single_agent",
+  "minion": "phi4-mini",
+  "master": "phi4-mini",
+  "n_minions": 1,
+  "n": 200,
+  "accuracy": 0.905,
+  "avg_latency_s": 6.859202577415854,
+  "avg_total_tokens": 261.725,
+  "avg_compute_cost": 661.789,
+  "avg_master_tokens": 174.155,
+  "master_usage_rate": 1,
+  "avg_model_calls": 1
+}

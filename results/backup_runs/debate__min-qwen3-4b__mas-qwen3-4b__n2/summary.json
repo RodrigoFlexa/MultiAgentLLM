@@ -1,0 +1,14 @@
+{
+  "protocol": "debate",
+  "minion": "qwen3-4b",
+  "master": "qwen3-4b",
+  "n_minions": 2,
+  "n": 200,
+  "accuracy": 0.84,
+  "avg_latency_s": 78.83979354382492,
+  "avg_total_tokens": 2968.87,
+  "avg_compute_cost": 6282.9,
+  "avg_master_tokens": 0,
+  "master_usage_rate": 0,
+  "avg_model_calls": 4
+}

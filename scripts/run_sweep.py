@@ -50,7 +50,8 @@ def main() -> None:
     p.add_argument("--slms", nargs="+", default=SLMS)
     p.add_argument("--masters", nargs="+", default=MASTERS)
     p.add_argument("--counts", nargs="+", type=int, default=COUNTS)
-    p.add_argument("--gpu", type=str, default=None)
+    p.add_argument("--gpu", type=str, default=cfg.GPU_DEVICE,
+                   help="GPU(s) via CUDA_VISIBLE_DEVICES (default: valor do .env)")
     p.add_argument("--n", type=int, default=cfg.EXPERIMENT.n_samples)
     p.add_argument("--seed", type=int, default=cfg.EXPERIMENT.seed)
     p.add_argument("--out", default="sweep_summary",
@@ -60,8 +61,7 @@ def main() -> None:
                    help="backend novo por rodada (não reaproveita VRAM)")
     args = p.parse_args()
 
-    if args.gpu is not None:
-        os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
+    os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
 
     base = replace(cfg.EXPERIMENT, n_samples=args.n, seed=args.seed)
     plan = build_runs(base, args.protocols, args.slms, args.masters, args.counts)

@@ -1,0 +1,14 @@
+{
+  "protocol": "single_agent",
+  "minion": "qwen2.5-32b",
+  "master": "qwen2.5-32b",
+  "n_minions": 1,
+  "n": 200,
+  "accuracy": 0.96,
+  "avg_latency_s": 26.614504114575684,
+  "avg_total_tokens": 359.695,
+  "avg_compute_cost": 8370.24,
+  "avg_master_tokens": 261.57,
+  "master_usage_rate": 1,
+  "avg_model_calls": 1
+}

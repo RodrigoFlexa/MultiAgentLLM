@@ -1,0 +1,23 @@
+{
+  "protocol": "single_agent",
+  "dataset": "gsm8k",
+  "split": "test",
+  "n_samples": 200,
+  "seed": 42,
+  "n_minions": 1,
+  "minion": {
+    "key": "qwen3-4b",
+    "repo": "Qwen/Qwen3-4B",
+    "params_b": 4.0
+  },
+  "master": {
+    "key": "qwen3-4b",
+    "repo": "Qwen/Qwen3-4B",
+    "params_b": 4.0
+  },
+  "debate_n_rounds": 2,
+  "foa_n_rounds": 2,
+  "backend": "hf",
+  "version": null,
+  "timestamp": "2026-06-23T20:36:02"
+}
