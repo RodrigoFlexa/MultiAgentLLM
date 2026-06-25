@@ -1,0 +1,23 @@
+{
+  "protocol": "foa",
+  "dataset": "gsm8k",
+  "split": "test",
+  "n_samples": 200,
+  "seed": 42,
+  "n_minions": 4,
+  "minion": {
+    "key": "qwen3-4b",
+    "repo": "Qwen/Qwen3-4B",
+    "params_b": 4.0
+  },
+  "master": {
+    "key": "qwen2.5-32b",
+    "repo": "Qwen/Qwen2.5-32B-Instruct",
+    "params_b": 32.0
+  },
+  "debate_n_rounds": 2,
+  "foa_n_rounds": 2,
+  "backend": "hf",
+  "version": null,
+  "timestamp": "2026-06-24T11:37:50"
+}

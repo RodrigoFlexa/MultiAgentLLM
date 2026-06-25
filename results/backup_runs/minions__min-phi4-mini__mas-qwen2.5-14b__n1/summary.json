@@ -1,0 +1,14 @@
+{
+  "protocol": "minions",
+  "minion": "phi4-mini",
+  "master": "qwen2.5-14b",
+  "n_minions": 1,
+  "n": 200,
+  "accuracy": 0.88,
+  "avg_latency_s": 5.07461493043229,
+  "avg_total_tokens": 269.19,
+  "avg_compute_cost": 541.956,
+  "avg_master_tokens": 0,
+  "master_usage_rate": 0,
+  "avg_model_calls": 1
+}

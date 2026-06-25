@@ -56,14 +56,14 @@ def main() -> None:
                    help=f"mestre/orquestrador — chaves: {sorted(cfg.MODEL_CATALOG)}")
     p.add_argument("--n-minions", type=int, default=cfg.EXPERIMENT.n_minions,
                    dest="n_minions", help="tamanho da frota (2..4)")
-    p.add_argument("--gpu", type=str, default=None)
+    p.add_argument("--gpu", type=str, default=cfg.GPU_DEVICE,
+                   help="GPU(s) via CUDA_VISIBLE_DEVICES (default: valor do .env)")
     p.add_argument("--n", type=int, default=cfg.EXPERIMENT.n_samples)
     p.add_argument("--seed", type=int, default=cfg.EXPERIMENT.seed)
     p.add_argument("--protocols", nargs="+", default=None)
     args = p.parse_args()
 
-    if args.gpu is not None:
-        os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
+    os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
 
     # valida as chaves de modelo cedo (mensagem clara)
     cfg.get_model(args.minion); cfg.get_model(args.master)

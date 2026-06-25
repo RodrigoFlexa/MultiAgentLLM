@@ -1,0 +1,23 @@
+{
+  "protocol": "single_agent",
+  "dataset": "gsm8k",
+  "split": "test",
+  "n_samples": 200,
+  "seed": 42,
+  "n_minions": 1,
+  "minion": {
+    "key": "phi4-mini",
+    "repo": "microsoft/Phi-4-mini-instruct",
+    "params_b": 3.8
+  },
+  "master": {
+    "key": "phi4-mini",
+    "repo": "microsoft/Phi-4-mini-instruct",
+    "params_b": 3.8
+  },
+  "debate_n_rounds": 2,
+  "foa_n_rounds": 2,
+  "backend": "hf",
+  "version": null,
+  "timestamp": "2026-06-23T21:02:13"
+}

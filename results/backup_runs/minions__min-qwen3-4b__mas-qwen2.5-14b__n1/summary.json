@@ -1,0 +1,14 @@
+{
+  "protocol": "minions",
+  "minion": "qwen3-4b",
+  "master": "qwen2.5-14b",
+  "n_minions": 1,
+  "n": 200,
+  "accuracy": 0.73,
+  "avg_latency_s": 20.05662355877459,
+  "avg_total_tokens": 552.79,
+  "avg_compute_cost": 1658.66,
+  "avg_master_tokens": 0,
+  "master_usage_rate": 0,
+  "avg_model_calls": 1
+}

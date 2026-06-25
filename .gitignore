@@ -22,3 +22,5 @@ __pycache__/config.cpython-310.pyc
 *.pyc
 src/__pycache__/experiments.cpython-310.pyc
 __pycache__/config.cpython-310.pyc
+__pycache__/
+*.pyc

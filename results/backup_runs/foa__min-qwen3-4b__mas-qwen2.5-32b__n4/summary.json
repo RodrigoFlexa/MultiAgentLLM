@@ -1,0 +1,14 @@
+{
+  "protocol": "foa",
+  "minion": "qwen3-4b",
+  "master": "qwen2.5-32b",
+  "n_minions": 4,
+  "n": 200,
+  "accuracy": 0.96,
+  "avg_latency_s": 145.46598311171866,
+  "avg_total_tokens": 9008.29,
+  "avg_compute_cost": 13852.52,
+  "avg_master_tokens": 88.265,
+  "master_usage_rate": 1,
+  "avg_model_calls": 7.44
+}
