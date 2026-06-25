@@ -118,6 +118,25 @@ class MoAConfig:
 
 
 @dataclass(frozen=True)
+class ClusterConfig:
+    """Mecanismo de cluster do FoA (usado pelo `foa` e por subtarefas complexas
+    do `foa_dag`). Reflexão crítica + nota: ao ver as respostas dos pares, cada
+    agente faz uma análise crítica/autocrítica (sem tratar nenhuma resposta como
+    verdade) E dá uma NOTA a cada par; depois re-resolve usando os insights. Para
+    cedo em caso de consenso; sem consenso, vence a maior nota acumulada."""
+    max_size: int = 3          # nº máximo de agentes no cluster
+    max_steps: int = 3         # nº máximo de passos (1 rascunho + refinos)
+
+
+@dataclass(frozen=True)
+class FoADagConfig:
+    """foa_dag: o orquestrador decide quebrar (ou não) o problema em subtarefas,
+    atribui um agente a cada uma (reuso permitido) e marca quais são complexas
+    (resolvidas por um cluster). Execução em sequência com síntese progressiva."""
+    max_subtasks: int = 6      # teto de subtarefas que o orquestrador pode criar
+
+
+@dataclass(frozen=True)
 class FoAConfig:
     """Federation of Agents (Giusti et al. 2025, arXiv:2509.20175) — apenas a
     forma de RESOLVER (sem roteamento semântico/DAG): uma frota de N SLMs faz um
@@ -153,3 +172,5 @@ MINIONS = MinionsConfig()
 DEBATE = DebateConfig()
 MOA = MoAConfig()
 FOA = FoAConfig()
+CLUSTER = ClusterConfig()
+DAG = FoADagConfig()

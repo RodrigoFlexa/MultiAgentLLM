@@ -50,7 +50,9 @@ def _meta(exp: cfg.ExperimentConfig, protocol: str) -> dict:
         "minion": {"key": exp.minion, "repo": mc.name, "params_b": mc.params_b},
         "master": {"key": exp.master, "repo": ma.name, "params_b": ma.params_b},
         "debate_n_rounds": cfg.DEBATE.n_rounds,
-        "foa_n_rounds": cfg.FOA.n_rounds,
+        "cluster_max_size": cfg.CLUSTER.max_size,
+        "cluster_max_steps": cfg.CLUSTER.max_steps,
+        "dag_max_subtasks": cfg.DAG.max_subtasks,
         "backend": cfg.BACKEND, "version": exp.version,
         "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
     }
