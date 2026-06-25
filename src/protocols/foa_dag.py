@@ -1,25 +1,20 @@
 """
-Protocolo — FoA com decomposição em DAG (foa_dag).
+Protocolo — FoA com decomposição dinâmica (foa_dag).
 
-Variante do Federation of Agents (Giusti et al., 2025, arXiv:2509.20175) que
-exercita as fases de DECOMPOSIÇÃO e DAG do paper, ausentes no `foa` (cluster).
+Variante do Federation of Agents (Giusti et al., 2025) que exercita a
+decomposição do paper:
 
-Regras desta versão (definidas para o nosso estudo):
-  * A DECOMPOSIÇÃO é proposta pelos TRABALHADORES: cada um dos N SLMs propõe um
-    plano de subtarefas.
-  * O MESTRE (Agent-0) funde as N propostas num ÚNICO plano de consenso com
-    EXATAMENTE N subtarefas, formando um DAG (subtarefas + dependências).
-  * Nº de subtarefas == nº de agentes: 1 agente resolve 1 subtarefa (agente i ↔
-    subtarefa i). NÃO há atribuição por capacidade (frota homogênea) nem
-    refinamento em cluster (cada agente trabalha sozinho no seu pedaço).
-  * O MESTRE orquestra a execução pela ordem topológica do DAG (propagando os
-    resultados dos predecessores) e faz a SÍNTESE final.
+  1. DECOMPOSIÇÃO (mestre/Agent-0): decide quebrar OU NÃO o problema. Simples →
+     1 subtarefa; complexo → uma sequência curta de subtarefas (até
+     `cfg.DAG.max_subtasks`). Cada subtarefa é atribuída a um worker (reuso
+     permitido) e marcada ou não como COMPLEXA.
+  2. EXECUÇÃO em SEQUÊNCIA, com SÍNTESE PROGRESSIVA: cada subtarefa é resolvida
+     e o mestre vai integrando o resultado numa "solução corrente". Uma subtarefa
+     complexa é resolvida por um CLUSTER (mecanismo reflexivo de `cluster.py`);
+     uma simples é resolvida por um único worker.
+  3. A solução corrente após a última subtarefa é a resposta final.
 
-Grafo:  START → propose → merge → solve → synth → END
-        (N SLMs)  (mestre)  (N SLMs)  (mestre)
-
-Custo por pergunta: N (propor) + 1 (fundir/DAG) + N (resolver) + 1 (sintetizar)
-= 2N + 2 chamadas. O custo POR AGENTE é registrado (quem trabalhou mais).
+Grafo:  START → decompose → execute → END
 """
 from __future__ import annotations
 
@@ -32,123 +27,108 @@ from langgraph.graph import END, START, StateGraph
 import config as cfg
 from src.dataset import Sample
 from src.protocols.base import (
-    Protocol, UsageState, combine_usage, empty_usage, register, usage_delta,
+    Protocol, UsageState, empty_usage, register, usage_delta,
 )
+from src.protocols.cluster import agent_costs_from_calls, run_cluster
+
+_USAGE_KEYS = ("latency_s", "total_tokens", "master_tokens", "minion_tokens",
+               "compute_cost", "n_model_calls")
 
 
 # ──────────────────────────────────────────────────────────────────────
 # Prompts
 # ──────────────────────────────────────────────────────────────────────
-def _propose_msgs(question: str, n: int) -> list[dict]:
+def _decompose_msgs(question: str, n: int, maxs: int) -> list[dict]:
     system = (
-        "You are a planner. Break the problem into a plan of EXACTLY "
-        f"{n} subtasks that together solve it. Each subtask has a short "
-        "instruction and lists the ids of the earlier subtasks it depends on. "
-        "Output JSON ONLY, no prose, in the form: "
-        '[{"id":0,"task":"...","deps":[]},{"id":1,"task":"...","deps":[0]}]'
+        "You are the orchestrator (Agent-0) of a team of workers. Decide how to "
+        "solve the problem.\n"
+        "- If it is SIMPLE, use a SINGLE subtask.\n"
+        f"- If it is COMPLEX, break it into a SHORT ordered sequence of at most "
+        f"{maxs} subtasks. Each subtask must be a concrete, self-contained step "
+        "whose result later steps can build on.\n"
+        f"Assign each subtask to one worker (worker number 1..{n}; you MAY reuse "
+        "a worker). Set complex=true ONLY for a subtask hard enough to deserve a "
+        "small team (a cluster); otherwise complex=false.\n"
+        'Output JSON ONLY: {"subtasks":[{"id":0,"task":"...","worker":1,'
+        '"complex":false}]}'
     )
     return [{"role": "system", "content": system},
-            {"role": "user", "content": f"Problem:\n{question}"}]
+            {"role": "user", "content":
+                f"Problem:\n{question}\n\nAvailable workers: {n}."}]
 
 
-def _merge_msgs(question: str, proposals: list[str], n: int) -> list[dict]:
-    bloco = "\n\n".join(f"[Worker {i+1} plan]\n{p}" for i, p in enumerate(proposals))
+def _subtask_msgs(question: str, task: str, running: str) -> list[dict]:
     system = (
-        "You are the orchestrator (Agent-0). Several workers proposed plans to "
-        f"decompose the same problem. Merge them into a SINGLE consensus plan "
-        f"with EXACTLY {n} subtasks forming a DAG. Output JSON ONLY: "
-        '[{"id":0,"task":"...","deps":[]}, ...]'
+        "You are a worker solving ONE subtask of a larger problem. Use the "
+        "solution so far if relevant. Solve only your subtask, show your work, "
+        "and state its result clearly (end with '#### <number>' if it yields a "
+        "number)."
     )
-    return [{"role": "system", "content": system},
-            {"role": "user", "content": f"Problem:\n{question}\n\nProposals:\n{bloco}"}]
-
-
-def _subtask_msgs(question: str, sub: dict, dep_text: str) -> list[dict]:
-    system = (
-        "You solve ONE subtask of a larger problem. Use the prerequisite "
-        "results if given. Reply with the result of THIS subtask only (a short "
-        "value and a one-line justification)."
-    )
-    user = (f"Original problem:\n{question}\n\nYour subtask:\n{sub['task']}")
-    if dep_text:
-        user += f"\n\nResults of prerequisite subtasks:\n{dep_text}"
+    user = f"Original problem:\n{question}\n\nYour subtask:\n{task}"
+    if running:
+        user += f"\n\nSolution so far:\n{running}"
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
-def _synth_msgs(question: str, plan: list[dict], results: dict) -> list[dict]:
-    bloco = "\n".join(
-        f"[Subtask {s['id']}] {s['task']}\n→ {results.get(s['id'], '(no result)')}"
-        for s in plan
-    )
+def _synth_msgs(question: str, running: str, sub: dict, result: str,
+                is_last: bool) -> list[dict]:
     system = (
-        "You are the orchestrator (Agent-0). Combine the subtask results into "
-        "the final answer to the original problem. Think briefly and ALWAYS end "
-        "with a line '#### <final number>'."
+        "You are the orchestrator integrating subtask results into a running "
+        "solution. Given the solution so far and the newest subtask result, "
+        "update the running solution. If the ORIGINAL problem is now fully "
+        "solved, give the final answer ending with a line '#### <final number>'. "
+        "Otherwise give the updated partial solution."
     )
-    return [{"role": "system", "content": system},
-            {"role": "user", "content": f"Problem:\n{question}\n\nSubtask results:\n{bloco}"}]
+    if is_last:
+        system += (" This is the LAST subtask, so you MUST end with "
+                   "'#### <final number>'.")
+    user = (
+        f"Original problem:\n{question}\n\n"
+        f"Solution so far:\n{running or '(none yet)'}\n\n"
+        f"Newest subtask (#{sub['id']}: {sub['task']}) result:\n{result}"
+    )
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
 # ──────────────────────────────────────────────────────────────────────
-# DAG: parsing robusto + ordenação topológica
+# Parsing do plano
 # ──────────────────────────────────────────────────────────────────────
-def _topo(plan: list[dict]) -> list[int] | None:
-    """Ordem topológica (Kahn). Devolve None se houver ciclo."""
-    deps = {p["id"]: set(p["deps"]) for p in plan}
-    order, ready = [], [i for i in deps if not deps[i]]
-    while ready:
-        i = ready.pop(0)
-        order.append(i)
-        for j in deps:
-            if i in deps[j]:
-                deps[j].discard(i)
-                if not deps[j] and j not in order and j not in ready:
-                    ready.append(j)
-    return order if len(order) == len(plan) else None
-
-
-def _parse_plan(text: str, n: int, question: str) -> list[dict]:
-    """Extrai o plano em JSON da saída do mestre; cai em uma cadeia linear de N
-    subtarefas se a parsing falhar. Sempre devolve EXATAMENTE N subtarefas com
-    ids 0..N-1 e dependências válidas e acíclicas."""
-    plan: list[dict] | None = None
+def _parse_plan(text: str, n: int, maxs: int, question: str) -> list[dict]:
+    plan = None
     try:
-        a, b = text.index("["), text.rindex("]") + 1
+        a, b = text.index("{"), text.rindex("}") + 1
         data = json.loads(text[a:b])
-        if isinstance(data, list) and data:
+        items = data.get("subtasks") if isinstance(data, dict) else data
+        if isinstance(items, list) and items:
             plan = []
-            for item in data:
-                if not isinstance(item, dict):
+            for it in items:
+                if not isinstance(it, dict):
                     continue
-                task = (item.get("task") or item.get("subtask")
-                        or item.get("description") or "Subtask")
-                deps = item.get("deps") or item.get("dependencies") or []
-                deps = [d for d in deps if isinstance(d, int)] if isinstance(deps, list) else []
-                plan.append({"task": str(task), "deps": deps})
+                plan.append({
+                    "task": str(it.get("task") or it.get("subtask") or "Solve the problem"),
+                    "worker": int(it.get("worker", 1)) if str(it.get("worker", 1)).isdigit() else 1,
+                    "complex": bool(it.get("complex", False)),
+                })
     except Exception:
         plan = None
 
     if not plan:
-        plan = [{"task": f"Step {i+1} toward solving the problem",
-                 "deps": ([i - 1] if i > 0 else [])} for i in range(n)]
+        # Fallback determinístico: 1 subtarefa (simples). Se houver >=2 workers,
+        # cria um 2º passo complexo — útil para exercitar o ramo de cluster.
+        if n >= 2:
+            plan = [
+                {"task": "Set up and compute the first part of the problem.",
+                 "worker": 1, "complex": False},
+                {"task": "Finish solving the problem using the previous result.",
+                 "worker": 2, "complex": True},
+            ]
+        else:
+            plan = [{"task": "Solve the problem.", "worker": 1, "complex": False}]
 
-    # exatamente N subtarefas
-    plan = plan[:n]
-    while len(plan) < n:
-        i = len(plan)
-        plan.append({"task": f"Step {i+1}", "deps": ([i - 1] if i > 0 else [])})
-
-    # reindexa ids 0..n-1 e saneia dependências
+    plan = plan[:maxs]
     for i, p in enumerate(plan):
         p["id"] = i
-    ids = set(range(n))
-    for p in plan:
-        p["deps"] = [d for d in p["deps"] if d in ids and d != p["id"]]
-
-    # garante aciclicidade; se houver ciclo, vira cadeia linear
-    if _topo(plan) is None:
-        for p in plan:
-            p["deps"] = [p["id"] - 1] if p["id"] > 0 else []
+        p["worker"] = min(max(1, p["worker"]), n)
     return plan
 
 
@@ -157,19 +137,11 @@ def _parse_plan(text: str, n: int, question: str) -> list[dict]:
 # ──────────────────────────────────────────────────────────────────────
 class State(UsageState, total=False):
     question: str
-    proposals: list[str]
     plan: list
     subtask_results: dict
+    running: str
     answer: str
-    calls: Annotated[list, operator.add]   # 1 registro por chamada (p/ custo por agente)
-
-
-def _record(gen, agent, phase) -> dict:
-    return {"agent": agent, "phase": phase,
-            "completion_tokens": gen.completion_tokens,
-            "prompt_tokens": gen.prompt_tokens,
-            "compute_cost": gen.compute_cost,
-            "latency_s": gen.latency_s}
+    calls: Annotated[list, operator.add]
 
 
 @register
@@ -178,94 +150,81 @@ class FoADag(Protocol):
 
     def build_graph(self):
         self.n_agents = self.hub.n_minions
-
         g = StateGraph(State)
-        g.add_node("propose", self._propose)
-        g.add_node("merge", self._merge)
-        g.add_node("solve", self._solve)
-        g.add_node("synth", self._synth)
-        g.add_edge(START, "propose")
-        g.add_edge("propose", "merge")
-        g.add_edge("merge", "solve")
-        g.add_edge("solve", "synth")
-        g.add_edge("synth", END)
+        g.add_node("decompose", self._decompose)
+        g.add_node("execute", self._execute)
+        g.add_edge(START, "decompose")
+        g.add_edge("decompose", "execute")
+        g.add_edge("execute", END)
         return g.compile()
 
-    # 1) trabalhadores propõem decomposições
-    def _propose(self, state: State) -> dict[str, Any]:
+    def _decompose(self, state: State) -> dict[str, Any]:
         q = state["question"]
-        gens = [self.hub.minion_agent().chat(_propose_msgs(q, self.n_agents),
-                                             gen_cfg=cfg.CREATIVE)
-                for _ in range(self.n_agents)]
-        return {
-            "proposals": [g.text for g in gens],
-            "calls": [_record(g, i, "propose") for i, g in enumerate(gens)],
-            **combine_usage(gens, is_master=False),
-        }
-
-    # 2) mestre funde as propostas num DAG de N subtarefas
-    def _merge(self, state: State) -> dict[str, Any]:
-        q = state["question"]
-        gen = self.hub.master.chat(_merge_msgs(q, state["proposals"], self.n_agents))
-        plan = _parse_plan(gen.text, self.n_agents, q)
-        return {"plan": plan, "calls": [_record(gen, "master", "merge")],
+        gen = self.hub.master.chat(_decompose_msgs(q, self.n_agents, cfg.DAG.max_subtasks))
+        plan = _parse_plan(gen.text, self.n_agents, cfg.DAG.max_subtasks, q)
+        return {"plan": plan,
+                "calls": [self._rec(gen, "master", "decompose")],
                 **usage_delta(gen, is_master=True)}
 
-    # 3) orquestra a execução pelo DAG (1 agente por subtarefa)
-    def _solve(self, state: State) -> dict[str, Any]:
+    def _execute(self, state: State) -> dict[str, Any]:
         q = state["question"]
         plan = state["plan"]
-        by_id = {p["id"]: p for p in plan}
-        order = _topo(plan) or [p["id"] for p in plan]
-
+        usage = empty_usage()
+        calls: list[dict] = []
         results: dict[int, str] = {}
-        gens, calls = [], []
-        for sid in order:
-            sub = by_id[sid]
-            dep_text = "\n".join(
-                f"[Subtask {d}] {results.get(d, '')}" for d in sub["deps"]
-            )
-            gen = self.hub.minion_agent().chat(_subtask_msgs(q, sub, dep_text))
-            results[sid] = gen.text
-            gens.append(gen)
-            calls.append(_record(gen, sid, "solve"))   # agente i ↔ subtarefa i
-        return {"subtask_results": results, "calls": calls,
-                **combine_usage(gens, is_master=False)}
+        running = ""
 
-    # 4) mestre sintetiza a resposta final
-    def _synth(self, state: State) -> dict[str, Any]:
-        q = state["question"]
-        gen = self.hub.master.chat(
-            _synth_msgs(q, state["plan"], state.get("subtask_results", {}))
-        )
-        return {"answer": gen.text, "calls": [_record(gen, "master", "synth")],
-                **usage_delta(gen, is_master=True)}
+        def add(delta):
+            for k in _USAGE_KEYS:
+                usage[k] += delta.get(k, 0)
+            usage["used_master"] = usage["used_master"] or delta.get("used_master", False)
 
-    # ── plumbing ──────────────────────────────────────────────────────
+        for idx, sub in enumerate(plan):
+            is_last = idx == len(plan) - 1
+            if sub["complex"]:
+                # subtarefa difícil → cluster reflexivo (FoA padrão)
+                ctx = (f"Original problem: {q}\nSolution so far: {running}"
+                       if running else f"Original problem: {q}")
+                cr = run_cluster(self.hub, sub["task"], context=ctx)
+                result = cr.answer
+                add(cr.usage)
+                calls.extend(cr.calls)
+            else:
+                # subtarefa simples → 1 worker
+                gen = self.hub.minion_agent().chat(_subtask_msgs(q, sub["task"], running))
+                result = gen.text
+                add(usage_delta(gen, is_master=False))
+                calls.append(self._rec(gen, sub["worker"] - 1, "subtask"))  # 0-based
+            results[sub["id"]] = result
+
+            # síntese progressiva (mestre)
+            gen = self.hub.master.chat(_synth_msgs(q, running, sub, result, is_last))
+            running = gen.text
+            add(usage_delta(gen, is_master=True))
+            calls.append(self._rec(gen, "master", "synth"))
+
+        return {"subtask_results": {str(k): v for k, v in results.items()},
+                "running": running, "answer": running, "calls": calls, **usage}
+
+    @staticmethod
+    def _rec(gen, agent, phase) -> dict:
+        return {"agent": agent, "phase": phase,
+                "completion_tokens": gen.completion_tokens,
+                "prompt_tokens": gen.prompt_tokens,
+                "compute_cost": gen.compute_cost,
+                "latency_s": gen.latency_s}
+
     def initial_state(self, sample: Sample) -> dict[str, Any]:
-        return {"question": sample.question, "proposals": [], "plan": [],
-                "subtask_results": {}, "calls": [], **empty_usage()}
+        return {"question": sample.question, "plan": [], "subtask_results": {},
+                "running": "", "calls": [], **empty_usage()}
 
     def extract(self, final_state: dict[str, Any]) -> tuple[str, dict]:
         calls = final_state.get("calls", [])
-        # custo POR AGENTE (só os SLMs 0..N-1): soma das fases propose + solve
-        agent_costs = []
-        for i in range(self.n_agents):
-            cs = [c for c in calls if c["agent"] == i]
-            agent_costs.append({
-                "agent": i,
-                "subtask": i,
-                "n_calls": len(cs),
-                "completion_tokens": sum(c["completion_tokens"] for c in cs),
-                "prompt_tokens": sum(c["prompt_tokens"] for c in cs),
-                "compute_cost": sum(c["compute_cost"] for c in cs),
-                "latency_s": sum(c["latency_s"] for c in cs),
-            })
         plan = final_state.get("plan", [])
         return final_state.get("answer", ""), {
+            "n_subtasks": len(plan),
             "plan": plan,
-            "subtask_results": {str(k): v for k, v in
-                                final_state.get("subtask_results", {}).items()},
-            "agent_costs": agent_costs,
+            "subtask_results": final_state.get("subtask_results", {}),
+            "agent_costs": agent_costs_from_calls(calls),
             "master_calls": [c for c in calls if c["agent"] == "master"],
         }

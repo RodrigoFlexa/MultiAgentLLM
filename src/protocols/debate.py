@@ -1,13 +1,11 @@
 """
-Protocolo — Debate Multiagente clássico ("society of minds").
+Protocolo — Debate Multiagente (estilo gold, Du et al. 2023, arXiv:2305.14325).
 
-Du, Li, Torralba, Tenenbaum, Mordatch — "Improving Factuality and Reasoning in
-Language Models through Multiagent Debate" (2023, arXiv:2305.14325).
-
-  * AGENTES HOMOGÊNEOS: N cópias do MESMO SLM (frota = hub.n_minions). Sem juiz.
-  * Rodada 0: cada agente responde INDEPENDENTE.
-  * Rodadas seguintes: cada agente vê as respostas dos OUTROS e revisa a sua.
-  * Resposta final por VOTO MAJORITÁRIO entre os agentes.
+N cópias do MESMO SLM debatem. A diferença para uma versão "fraca" (onde todos
+simplesmente aceitam a resposta alheia) é que aqui cada agente faz um DEBATE de
+verdade: examina criticamente o raciocínio dos outros, reexamina o seu com a
+mesma severidade, e só então atualiza — mudando de ideia apenas quando a lógica
+justifica, sem se curvar à maioria. A resposta final sai por VOTO MAJORITÁRIO.
 
 Grafo:  START → debate ──(round < N)──┐
                   ▲                    │
@@ -25,8 +23,46 @@ import config as cfg
 from src.dataset import Sample
 from src.metrics import extract_final_number
 from src.protocols.base import (
-    Protocol, UsageState, combine_usage, empty_usage, register, solve_messages,
+    Protocol, UsageState, combine_usage, empty_usage, register,
 )
+
+_SOLVE_SYSTEM = (
+    "You are a sharp, independent problem-solver. Reason from first principles, "
+    "check every arithmetic step, and do not cut corners. Solve the problem step "
+    "by step and end with a line '#### <final number>'."
+)
+
+_DEBATE_SYSTEM = (
+    "You are a careful debater in a panel solving a math problem. You do NOT "
+    "defer to the majority — agreement matters only when it is actually correct. "
+    "Scrutinize others' reasoning and your own with equal rigor, then commit to "
+    "the answer the evidence supports. Always end with a line '#### <final number>'."
+)
+
+
+def _solve_msgs(question: str) -> list[dict]:
+    return [{"role": "system", "content": _SOLVE_SYSTEM},
+            {"role": "user", "content": f"Problem:\n{question}"}]
+
+
+def _debate_msgs(question: str, own: str, others: list[str]) -> list[dict]:
+    bloco = "\n\n".join(f"[Solver {j+1}]\n{a}" for j, a in enumerate(others))
+    user = (
+        f"Problem:\n{question}\n\n"
+        f"Your previous solution:\n{own}\n\n"
+        f"Other solvers' solutions:\n{bloco}\n\n"
+        "Debate now, in this order:\n"
+        "1) Examine each other solver's reasoning and arithmetic, and say "
+        "specifically where each is right or wrong.\n"
+        "2) Re-examine YOUR OWN previous solution with the same scrutiny and "
+        "point out any mistake you find in it.\n"
+        "3) Give your updated solution. Change your answer only if the reasoning "
+        "justifies it — do not just follow the majority; if you still believe "
+        "your answer, defend it.\n"
+        "End with a line '#### <final number>'."
+    )
+    return [{"role": "system", "content": _DEBATE_SYSTEM},
+            {"role": "user", "content": user}]
 
 
 class State(UsageState, total=False):
@@ -42,7 +78,7 @@ class Debate(Protocol):
     name = "debate"
 
     def build_graph(self):
-        self.n_agents = self.hub.n_minions       # tamanho da frota (parâmetro de rodada)
+        self.n_agents = self.hub.n_minions
         self.n_rounds = cfg.DEBATE.n_rounds
 
         g = StateGraph(State)
@@ -55,19 +91,6 @@ class Debate(Protocol):
         g.add_edge("tally", END)
         return g.compile()
 
-    def _revise_msgs(self, question: str, i: int, others: list[str]) -> list[dict]:
-        bloco = "\n\n".join(
-            f"[Agent {j+1}]\n{ans}" for j, ans in enumerate(others) if j != i
-        )
-        user = (
-            f"Problem:\n{question}\n\n"
-            f"These are other agents' solutions to the same problem:\n{bloco}\n\n"
-            "Use the other agents' solutions as additional information, revise "
-            "your reasoning and give your updated answer, ending with a line "
-            "'#### <final number>'."
-        )
-        return solve_messages(user)
-
     def _debate_round(self, state: State) -> dict[str, Any]:
         question = state["question"]
         round_idx = state.get("round", 0)
@@ -75,15 +98,15 @@ class Debate(Protocol):
 
         gens = []
         for i in range(self.n_agents):
-            msgs = (solve_messages(question) if round_idx == 0
-                    else self._revise_msgs(question, i, prev))
+            if round_idx == 0:
+                msgs = _solve_msgs(question)
+            else:
+                others = [a for j, a in enumerate(prev) if j != i]
+                msgs = _debate_msgs(question, prev[i], others)
             gens.append(self.hub.minion_agent().chat(msgs, gen_cfg=cfg.CREATIVE))
 
-        return {
-            "answers": [g.text for g in gens],
-            "round": round_idx + 1,
-            **combine_usage(gens, is_master=False),
-        }
+        return {"answers": [g.text for g in gens], "round": round_idx + 1,
+                **combine_usage(gens, is_master=False)}
 
     def _tally(self, state: State) -> dict[str, Any]:
         answers = state.get("answers", [])
@@ -97,10 +120,8 @@ class Debate(Protocol):
         empatados = [n for n, c in counts.items() if c == max_votes]
         first_idx = {n: next(i for i, m in valid if m == n) for n in empatados}
         winner = min(empatados, key=lambda n: first_idx[n])
-        return {
-            "answer": answers[first_idx[winner]],
-            "vote_distribution": {str(n): c for n, c in counts.items()},
-        }
+        return {"answer": answers[first_idx[winner]],
+                "vote_distribution": {str(n): c for n, c in counts.items()}}
 
     def _keep_debating(self, state: State) -> str:
         return "continue" if state.get("round", 0) < self.n_rounds else "tally"
