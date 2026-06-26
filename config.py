@@ -112,9 +112,12 @@ class DebateConfig:
 
 @dataclass(frozen=True)
 class MoAConfig:
-    """Mixture-of-Agents (Wang et al. 2024): N SLMs propõem em paralelo e o
-    mestre agrega. 1 camada de propostas, sem rodadas adversariais."""
-    pass                        # nº de proposers = n_minions (parâmetro de rodada)
+    """Mixture-of-Agents (Wang et al. 2024): N SLMs (proposers) propõem; em cada
+    camada seguinte re-propõem sintetizando TODAS as respostas da camada anterior
+    (aggregate-and-synthesize). O mestre agrega a última camada. nº de proposers
+    = n_minions (parâmetro de rodada). n_layers=1 reproduz o MoA "raso" (1 camada
+    + agregação)."""
+    n_layers: int = 2           # nº de camadas de proposers (profundidade do MoA)
 
 
 @dataclass(frozen=True)
