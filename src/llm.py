@@ -40,8 +40,12 @@ class GenerationResult:
     @property
     def compute_cost(self) -> float:
         """Proxy de custo computacional desta geração: params (bi) × tokens
-        gerados. Rodar um 32B por 100 tokens "pesa" ~8x um 4B por 100 tokens."""
-        return self.params_b * self.completion_tokens
+        totais (prompt + completion). Rodar um 32B por 100 tokens "pesa" ~8x
+        um 4B por 100 tokens. Inclui prompt_tokens porque o forward pass do
+        prefill custa ~tantos FLOPs/token quanto o decode — contar só
+        completion_tokens subestimava protocolos com prompts longos
+        (ex.: foa_dag, debate, onde agentes leem respostas de outros)."""
+        return self.params_b * self.total_tokens
 
 
 # ──────────────────────────────────────────────────────────────────────

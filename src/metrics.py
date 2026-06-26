@@ -66,7 +66,7 @@ class QueryResult:
     total_tokens: int = 0
     master_tokens: int = 0       # tokens do mestre/orquestrador (caros)
     minion_tokens: int = 0       # tokens dos SLMs (baratos)
-    compute_cost: float = 0.0    # Σ params_b × tokens gerados (proxy de custo)
+    compute_cost: float = 0.0    # Σ params_b × tokens totais (proxy de custo)
     used_master: bool = False
     n_model_calls: int = 0
     extra: dict = field(default_factory=dict)

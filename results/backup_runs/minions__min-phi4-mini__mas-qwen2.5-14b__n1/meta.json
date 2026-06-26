@@ -2,7 +2,7 @@
   "protocol": "minions",
   "dataset": "gsm8k",
   "split": "test",
-  "n_samples": 200,
+  "n_samples": 50,
   "seed": 42,
   "n_minions": 1,
   "minion": {
@@ -16,8 +16,10 @@
     "params_b": 14.0
   },
   "debate_n_rounds": 2,
-  "foa_n_rounds": 2,
+  "cluster_max_size": 3,
+  "cluster_max_steps": 3,
+  "dag_max_subtasks": 6,
   "backend": "hf",
   "version": null,
-  "timestamp": "2026-06-23T23:57:09"
+  "timestamp": "2026-06-26T15:47:00"
 }

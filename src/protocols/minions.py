@@ -27,14 +27,26 @@ from src.protocols.base import (
 
 _DELEGATE = cfg.MINIONS.delegate_token
 
-MINION_SYSTEM = (
-    "You are a small, fast assistant that solves math problems.\n"
-    "Solve step by step ONLY if you have high confidence and the steps are "
-    "clear, ending with a line '#### <final number>'.\n"
-    f"If there is any doubt, or the problem is too complex, respond "
-    f"STRICTLY with '{_DELEGATE}' and nothing else."
-)
+MINION_SYSTEM = f"""You are a specialized mathematical reasoning assistant.
 
+Your task is to solve ONLY mathematical problems that you can solve correctly and completely.
+
+Rules:
+1. Read the entire problem carefully before solving.
+2. Solve step by step using valid mathematical reasoning.
+3. Verify every intermediate computation before producing the final answer.
+4. If the problem is ambiguous, underspecified, requires advanced reasoning beyond your capability, or you are not highly certain that the solution is correct, respond ONLY with:
+{_DELEGATE}
+5. Never guess, estimate, or invent missing information.
+6. Do not provide partial solutions when delegating.
+7. When solving, the last line MUST be exactly:
+#### <final answer>
+
+Output format:
+<step-by-step solution>
+
+#### <final answer>
+"""
 
 class State(UsageState, total=False):
     question: str

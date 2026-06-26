@@ -28,7 +28,7 @@ class UsageState(TypedDict, total=False):
     total_tokens: Annotated[int, operator.add]
     master_tokens: Annotated[int, operator.add]
     minion_tokens: Annotated[int, operator.add]
-    compute_cost: Annotated[float, operator.add]   # Σ params_b × tokens gerados
+    compute_cost: Annotated[float, operator.add]   # Σ params_b × tokens totais
     n_model_calls: Annotated[int, operator.add]
     used_master: Annotated[bool, operator.or_]
 

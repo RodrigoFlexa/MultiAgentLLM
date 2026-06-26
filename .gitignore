@@ -25,3 +25,8 @@ __pycache__/config.cpython-310.pyc
 __pycache__/
 *.pyc
 results/*
+
+foa_backup/*
+results/backup_runs/minions__min-phi4-mini__mas-qwen2.5-14b__n1/meta.json
+results/backup_runs/minions__min-phi4-mini__mas-qwen2.5-14b__n1/raw.json
+results/backup_runs/minions__min-phi4-mini__mas-qwen2.5-14b__n1/summary.json
